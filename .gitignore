@@ -2,6 +2,8 @@
 *.o
 *.pyc
 
+*.txt
+
 # gtags
 GTAGS
 GRTAGS
@@ -74,3 +76,10 @@ flake8_output.txt
 
 # ESP-IDF library 
 build
+
+
+
+
+Makefile
+sdkconfig
+sdkconfig.old
