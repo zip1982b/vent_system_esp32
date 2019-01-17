@@ -37,63 +37,40 @@
 #define ESP_INTR_FLAG_DEFAULT 0
 
 
- xQueueHandle xQueueDIM;
- xQueueHandle xQueueISR;
+xQueueHandle xQueueDIM;
+ //xQueueHandle xQueueISR;
 
- static void IRAM_ATTR gpio_isr_handler(void* arg)
-{
-    uint32_t gpio_num = (uint32_t) arg;
-	if(gpio_num == ZERO_SENSOR){
-		gpio_set_intr_type(ZERO_SENSOR, GPIO_INTR_DISABLE);
-		xQueueSendFromISR(xQueueISR, &gpio_num, 0);
-	}
-}
 
 
 
 
 static void vCHANGE_SPEED(void* arg)
 {	
-	uint32_t io_num= 0;
-	uint8_t dim = 5;
+	uint8_t dim = 0;
     for(;;) {
 		xQueueReceive(xQueueDIM, &dim, 0);
-		printf("[vCHANGE_SPEED] dim= %d\n", dim);
-		xQueueReceive(xQueueISR, &io_num, portMAX_DELAY);
-		if(io_num == ZERO_SENSOR && dim == 0)
-		{
-			gpio_set_level(FAN_IN, 1);
-			ets_delay_us(100); // 100 microsec
-			gpio_set_level(FAN_IN, 0);
-			gpio_set_intr_type(ZERO_SENSOR, GPIO_INTR_ANYEDGE);
-		}
-		else{
-			vTaskDelay(dim / portTICK_RATE_MS);
-			gpio_set_level(FAN_IN, 1);
-			ets_delay_us(100); // 100 microsec
-			gpio_set_level(FAN_IN, 0);
-			gpio_set_intr_type(ZERO_SENSOR, GPIO_INTR_ANYEDGE);
-		}
+		printf("delay = %d ms\n", dim);
+		gpio_set_level(FAN_IN, 1);
+		vTaskDelay(50 / portTICK_RATE_MS);
+		gpio_set_level(FAN_IN, 0);
+		vTaskDelay(dim / portTICK_RATE_MS);
+	}
+}
+
+static void ON_OFF_FAN(void* arg)
+{	
+	uint8_t dim = 0;
+    for(;;) {
+		dim = 0;
+		xQueueSendToBack(xQueueDIM, &dim, 100/portTICK_RATE_MS);
+		vTaskDelay(20000 / portTICK_RATE_MS);
+		dim = 100;
+		xQueueSendToBack(xQueueDIM, &dim, 100/portTICK_RATE_MS);
+		vTaskDelay(20000 / portTICK_RATE_MS);
 	}
 }
 
 
-
-
-
-static void ON_OFF_FAN(void* arg)
-{
-    uint8_t dim;
-    for(;;) {
-		dim = 0;
-		xQueueSendToBack(xQueueDIM, &dim, 100/portTICK_RATE_MS);
-		vTaskDelay(10000 / portTICK_RATE_MS);
-		
-		dim = 5;
-		xQueueSendToBack(xQueueDIM, &dim, 100/portTICK_RATE_MS);
-		vTaskDelay(10000 / portTICK_RATE_MS);
-    }
-}
 
 
 
@@ -111,23 +88,23 @@ void app_main()
 	/*********************/
 	
 	/*** zero sensor ***/
-    io_conf.intr_type = GPIO_INTR_ANYEDGE; //interrupt ANYEDGE
-    io_conf.pin_bit_mask = GPIO_INPUT_PIN_SEL; //bit mask of the pins, use GPIO34 here
-    io_conf.mode = GPIO_MODE_INPUT; //set as input mode
-    io_conf.pull_up_en = 0; //enable pull-up mode
-    io_conf.pull_down_en = 0; //disable pull-down_cw mode - отключитли подтяжку к земле
-    gpio_config(&io_conf);
+    //io_conf.intr_type = GPIO_INTR_ANYEDGE; //interrupt ANYEDGE
+    //io_conf.pin_bit_mask = GPIO_INPUT_PIN_SEL; //bit mask of the pins, use GPIO34 here
+    //io_conf.mode = GPIO_MODE_INPUT; //set as input mode
+    //io_conf.pull_up_en = 0; //enable pull-up mode
+    //io_conf.pull_down_en = 0; //disable pull-down_cw mode - отключитли подтяжку к земле
+    //gpio_config(&io_conf);
 	
 	/*********************/
 	
 	//install gpio isr service
-    gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
+    //gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
     //hook isr handler for specific gpio pin
-    gpio_isr_handler_add(ZERO_SENSOR, gpio_isr_handler, (void*) ZERO_SENSOR);
+    //gpio_isr_handler_add(ZERO_SENSOR, gpio_isr_handler, (void*) ZERO_SENSOR);
 
 
 	
-	xQueueISR = xQueueCreate(5, sizeof(uint32_t));
+	//xQueueISR = xQueueCreate(5, sizeof(uint32_t));
 	
 	xQueueDIM = xQueueCreate(10, sizeof(uint8_t));
 	
