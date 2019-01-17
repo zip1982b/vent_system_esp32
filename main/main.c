@@ -55,32 +55,51 @@
 static void vCHANGE_SPEED(void* arg)
 {	
 	uint32_t io_num= 0;
-	uint8_t dim = 5;
+	uint8_t half_period = 0;
+	uint8_t period = 0;
+	uint8_t dim = 0;
     for(;;) {
-		xQueueReceive(xQueueDIM, &dim, 0);
-		printf("[vCHANGE_SPEED] dim= %d\n", dim);
+		//xQueueReceive(xQueueDIM, &dim, 0);
 		xQueueReceive(xQueueISR, &io_num, portMAX_DELAY);
-		if(io_num == ZERO_SENSOR && dim == 0)
+		if(io_num == ZERO_SENSOR)
 		{
-			gpio_set_level(FAN_IN, 1);
-			ets_delay_us(100); // 100 microsec
-			gpio_set_level(FAN_IN, 0);
+			half_period ++;
+			period = half_period / 2;
+			printf("[vCHANGE_SPEED] period= %d\n", period);
+			if(period <= 5){
+				gpio_set_level(FAN_IN, 1);
+			}
+			else if(period >= 20){
+				gpio_set_level(FAN_IN, 0);
+			}
+			if(period > 20) half_period = 0;
+			
 			gpio_set_intr_type(ZERO_SENSOR, GPIO_INTR_ANYEDGE);
+			/*
+			if(half_period % 2){
+				
+			}
+			*/
+			//gpio_set_level(FAN_IN, 1);
+			//ets_delay_us(100); // 100 microsec
+			//gpio_set_level(FAN_IN, 0);
+			//gpio_set_intr_type(ZERO_SENSOR, GPIO_INTR_ANYEDGE);
 		}
+		/*
 		else{
 			vTaskDelay(dim / portTICK_RATE_MS);
 			gpio_set_level(FAN_IN, 1);
 			ets_delay_us(100); // 100 microsec
 			gpio_set_level(FAN_IN, 0);
 			gpio_set_intr_type(ZERO_SENSOR, GPIO_INTR_ANYEDGE);
-		}
+		} */
 	}
 }
 
 
 
 
-
+/*
 static void ON_OFF_FAN(void* arg)
 {
     uint8_t dim;
@@ -95,7 +114,7 @@ static void ON_OFF_FAN(void* arg)
     }
 }
 
-
+*/
 
 
 void app_main()
@@ -129,10 +148,10 @@ void app_main()
 	
 	xQueueISR = xQueueCreate(5, sizeof(uint32_t));
 	
-	xQueueDIM = xQueueCreate(10, sizeof(uint8_t));
+	//xQueueDIM = xQueueCreate(10, sizeof(uint8_t));
 	
 	xTaskCreate(vCHANGE_SPEED, "CHANGE_SPEED", 2048, NULL, 11, NULL);
 		
 	
-    xTaskCreate(ON_OFF_FAN, "on off Fan", 2048, NULL, 10, NULL);
+    //xTaskCreate(ON_OFF_FAN, "on off Fan", 2048, NULL, 10, NULL);
 }
