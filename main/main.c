@@ -38,7 +38,7 @@
 
 
 xQueueHandle xQueueDIM;
- //xQueueHandle xQueueISR;
+
 
 
 
@@ -61,10 +61,10 @@ static void ON_OFF_FAN(void* arg)
 {	
 	uint8_t dim = 0;
     for(;;) {
-		dim = 0;
+		dim = 0; // 100%
 		xQueueSendToBack(xQueueDIM, &dim, 100/portTICK_RATE_MS);
 		vTaskDelay(20000 / portTICK_RATE_MS);
-		dim = 100;
+		dim = 100; // 50%
 		xQueueSendToBack(xQueueDIM, &dim, 100/portTICK_RATE_MS);
 		vTaskDelay(20000 / portTICK_RATE_MS);
 	}
