@@ -12,23 +12,19 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "driver/gpio.h"
+
+#include "rom/ets_sys.h"
 
 /**
  * Brief:
- * This test code configure gpio and use gpio interrupt.
- *
+ * 
  * GPIO status:
- * GPIO18: output
- * GPIO19: output
- * GPIO4:  input, pulled up, interrupt from rising edge and falling edge
- * GPIO5:  input, pulled up, interrupt from rising edge.
- *
- * Test:
- * Connect GPIO18 with GPIO4
- * Connect GPIO19 with GPIO5
- * Generate pulses on GPIO18/19, that triggers interrupt on GPIO4/5
- *
+ * GPIO32: output
+ * GPIO33: output
+ * GPIO34:  input, interrupt from rising edge and falling edge
+ * 
  */
  
 
@@ -39,32 +35,46 @@
 #define ZERO_SENSOR			34
 #define GPIO_INPUT_PIN_SEL  ((1ULL<<ZERO_SENSOR))
 #define ESP_INTR_FLAG_DEFAULT 0
- 
- xSemaphoreHandle xBinarySemaphore;
- 
- 
+
+
+ xQueueHandle xQueueDIM;
+ xQueueHandle xQueueISR;
+
  static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
     uint32_t gpio_num = (uint32_t) arg;
-	
 	if(gpio_num == ZERO_SENSOR){
 		gpio_set_intr_type(ZERO_SENSOR, GPIO_INTR_DISABLE);
-		
+		xQueueSendFromISR(xQueueISR, &gpio_num, 0);
 	}
-	
 }
 
 
 
 
 static void vCHANGE_SPEED(void* arg)
-{
-	//portBASE_TYPE xStatus;
-    uint32_t io_num;
+{	
+	uint32_t io_num= 0;
+	uint8_t dim = 5;
     for(;;) {
-		xSemaphoreTake(xBinarySemaphore, portMAX_DELAY);
-		
-    }
+		xQueueReceive(xQueueDIM, &dim, 0);
+		printf("[vCHANGE_SPEED] dim= %d\n", dim);
+		xQueueReceive(xQueueISR, &io_num, portMAX_DELAY);
+		if(io_num == ZERO_SENSOR && dim == 0)
+		{
+			gpio_set_level(FAN_IN, 1);
+			ets_delay_us(100); // 100 microsec
+			gpio_set_level(FAN_IN, 0);
+			gpio_set_intr_type(ZERO_SENSOR, GPIO_INTR_ANYEDGE);
+		}
+		else{
+			vTaskDelay(dim / portTICK_RATE_MS);
+			gpio_set_level(FAN_IN, 1);
+			ets_delay_us(100); // 100 microsec
+			gpio_set_level(FAN_IN, 0);
+			gpio_set_intr_type(ZERO_SENSOR, GPIO_INTR_ANYEDGE);
+		}
+	}
 }
 
 
@@ -73,12 +83,15 @@ static void vCHANGE_SPEED(void* arg)
 
 static void ON_OFF_FAN(void* arg)
 {
-    
+    uint8_t dim;
     for(;;) {
-        //gpio_set_level(FAN_IN, 0);
-		vTaskDelay(5000 / portTICK_RATE_MS);
-        //gpio_set_level(FAN_IN, 1);
-		vTaskDelay(5000 / portTICK_RATE_MS);
+		dim = 0;
+		xQueueSendToBack(xQueueDIM, &dim, 100/portTICK_RATE_MS);
+		vTaskDelay(10000 / portTICK_RATE_MS);
+		
+		dim = 5;
+		xQueueSendToBack(xQueueDIM, &dim, 100/portTICK_RATE_MS);
+		vTaskDelay(10000 / portTICK_RATE_MS);
     }
 }
 
@@ -104,6 +117,7 @@ void app_main()
     io_conf.pull_up_en = 0; //enable pull-up mode
     io_conf.pull_down_en = 0; //disable pull-down_cw mode - отключитли подтяжку к земле
     gpio_config(&io_conf);
+	
 	/*********************/
 	
 	//install gpio isr service
@@ -112,13 +126,13 @@ void app_main()
     gpio_isr_handler_add(ZERO_SENSOR, gpio_isr_handler, (void*) ZERO_SENSOR);
 
 
-
-
 	
-	vSemaphoreCreateBinary(xBinarySemaphore);
-	if(xBinarySemaphore != NULL){
-		xTaskCreate(vCHANGE_SPEED, "CHANGE_SPEED", 1000, NULL, 11, NULL);
+	xQueueISR = xQueueCreate(5, sizeof(uint32_t));
+	
+	xQueueDIM = xQueueCreate(10, sizeof(uint8_t));
+	
+	xTaskCreate(vCHANGE_SPEED, "CHANGE_SPEED", 2048, NULL, 11, NULL);
 		
-	}	
+	
     xTaskCreate(ON_OFF_FAN, "on off Fan", 2048, NULL, 10, NULL);
 }
