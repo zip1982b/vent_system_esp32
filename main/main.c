@@ -14,85 +14,65 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "driver/gpio.h"
+#include "driver/periph_ctrl.h"
+#include "driver/timer.h"
 
 #include "rom/ets_sys.h"
+
+
+
+#include "esp_log.h"
+
 
 /**
  * Brief:
  * 
  * GPIO status:
  * GPIO32: output
- * GPIO33: output
  * GPIO34:  input, interrupt from rising edge and falling edge
  * 
  */
  
+static const char* TAG = "VentSys";
 
-#define FAN_IN				32
-#define FAN_OUT				33
-#define GPIO_OUTPUT_PIN_SEL  ((1ULL<<FAN_IN) | (1ULL<<FAN_OUT))
+#define FAN				32
+
+#define GPIO_OUTPUT_PIN_SEL  ((1ULL<<FAN))
 
 #define ZERO_SENSOR			34
 #define GPIO_INPUT_PIN_SEL  ((1ULL<<ZERO_SENSOR))
 #define ESP_INTR_FLAG_DEFAULT 0
 
+#define TIMER_DIVIDER         16  //  Hardware timer clock divider
+#define TIMER_SCALE           (TIMER_BASE_CLK / TIMER_DIVIDER)  // convert counter value to seconds
+#define TIMER1_INTERVAL_SWITCH_ON_TRIAC   (0.00005) // for switch on TRIAC (sec) - 50uS
+#define SPEED_1   (0.005)   // for firing angle to be 90' for 220V 50Hz AC signal, we need to have a delay of 5 ms
+#define WITHOUT_RELOAD   0        
+#define WITH_RELOAD      1     
 
- xQueueHandle xQueueDIM;
- xQueueHandle xQueueISR;
+typedef struct {
+    uint8_t speed; //0, 1 ,2
+} fan_event_t;
+
+xQueueHandle xQueueDIM;
+xSemaphoreHandle xBinSemaphoreZS;
+xSemaphoreHandle xBinSemaphoreT0;
+xSemaphoreHandle xBinSemaphoreT1;
 
  static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
     uint32_t gpio_num = (uint32_t) arg;
+	static portBASE_TYPE xHigherPriorityTaskWoken;
+	xHigherPriorityTaskWoken = pdFALSE;
+	ESP_LOGI(TAG, "[gpio_isr_handler] inside interrupt handler\n");
 	if(gpio_num == ZERO_SENSOR){
-		gpio_set_intr_type(ZERO_SENSOR, GPIO_INTR_DISABLE);
-		xQueueSendFromISR(xQueueISR, &gpio_num, 0);
-	}
-}
-
-
-
-
-static void vCHANGE_SPEED(void* arg)
-{	
-	uint32_t io_num= 0;
-	uint8_t half_period = 0;
-	uint8_t period = 0;
-	uint8_t dim = 0;
-    for(;;) {
-		//xQueueReceive(xQueueDIM, &dim, 0);
-		xQueueReceive(xQueueISR, &io_num, portMAX_DELAY);
-		if(io_num == ZERO_SENSOR)
+		ESP_LOGI(TAG, "[gpio_isr_handler] event ZERO_SENSOR \n");
+		xSemaphoreGiveFromISR(xBinSemaphoreZS, &xHigherPriorityTaskWoken);
+		if(xHigherPriorityTaskWoken)
 		{
-			half_period ++;
-			period = half_period / 2;
-			printf("[vCHANGE_SPEED] period= %d\n", period);
-			if(period <= 5){
-				gpio_set_level(FAN_IN, 1);
-			}
-			else if(period >= 20){
-				gpio_set_level(FAN_IN, 0);
-			}
-			if(period > 20) half_period = 0;
-			
-			gpio_set_intr_type(ZERO_SENSOR, GPIO_INTR_ANYEDGE);
-			/*
-			if(half_period % 2){
-				
-			}
-			*/
-			//gpio_set_level(FAN_IN, 1);
-			//ets_delay_us(100); // 100 microsec
-			//gpio_set_level(FAN_IN, 0);
-			//gpio_set_intr_type(ZERO_SENSOR, GPIO_INTR_ANYEDGE);
+			ESP_LOGI(TAG, "[gpio_isr_handler] xHigherPriorityTaskWoken = TRUE - Yield");
+			portYIELD_FROM_ISR();
 		}
-		/*
-		else{
-			vTaskDelay(dim / portTICK_RATE_MS);
-			gpio_set_level(FAN_IN, 1);
-			ets_delay_us(100); // 100 microsec
-			gpio_set_level(FAN_IN, 0);
-			gpio_set_intr_type(ZERO_SENSOR, GPIO_INTR_ANYEDGE);
-		} */
 	}
 }
 
@@ -100,21 +80,236 @@ static void vCHANGE_SPEED(void* arg)
 
 
 /*
-static void ON_OFF_FAN(void* arg)
+ * Timer group0 ISR handler
+ * switch on TRIAC
+ * switch off TRIAC
+ */
+void IRAM_ATTR timer_group0_isr(void *para)
 {
-    uint8_t dim;
+    //timer_spinlock_take(TIMER_GROUP_0);
+    timer_idx_t timer_idx = (timer_idx_t) para;
+	ESP_LOGI(TAG, "[timer_group0_isr] para = %d", timer_idx);
+	//uint32_t timer_intr = timer_group_get_intr_status_in_isr(TIMER_GROUP_0);
+	timer_intr_t timer_intr = timer_group_intr_get_in_isr(TIMER_GROUP_0);
+	
+	
+	static portBASE_TYPE xHigherPriorityTaskWoken;
+	xHigherPriorityTaskWoken = pdFALSE;
+	ESP_LOGI(TAG, "[timer_group0_isr] in ISR");
+	
+
+	if (timer_intr & TIMER_INTR_T0) {
+		ESP_LOGI(TAG, "[timer_group0_isr] T0 event");
+		timer_group_intr_clr_in_isr(TIMER_GROUP_0, TIMER_0);
+		xSemaphoreGiveFromISR(xBinSemaphoreT0, &xHigherPriorityTaskWoken);
+		if(xHigherPriorityTaskWoken)
+		{
+			portYIELD_FROM_ISR();
+		}
+	} 
+	else if (timer_intr & TIMER_INTR_T1) {
+		ESP_LOGI(TAG, "[timer_group0_isr] T1 event");
+        timer_group_intr_clr_in_isr(TIMER_GROUP_0, TIMER_1);
+		xSemaphoreGiveFromISR(xBinSemaphoreT1, &xHigherPriorityTaskWoken);
+		if(xHigherPriorityTaskWoken)
+		{
+			portYIELD_FROM_ISR();
+		}
+    } 
+    /* After the alarm has been triggered we need enable it again, so it is triggered the next time */
+	ESP_LOGI(TAG, "[timer_group0_isr] enable alarm in isr");
+    timer_group_enable_alarm_in_isr(TIMER_GROUP_0, timer_idx);
+    //timer_spinlock_give(TIMER_GROUP_0);
+}
+
+
+
+
+
+/* very high priority task*/
+static void  task_isr_handler_ZS(void* arg)
+{
+	/*
+	0 - off
+	1 - 50 % = 0.005mS
+	2 - 100 % = 0.01mS
+	*/
+	
+	/* Select and initialize basic parameters of the timer */
+    timer_config_t config;
+    config.divider = TIMER_DIVIDER;
+    config.counter_dir = TIMER_COUNT_UP;
+    config.counter_en = TIMER_PAUSE;
+    config.alarm_en = TIMER_ALARM_EN;
+    config.intr_type = TIMER_INTR_LEVEL;
+    config.auto_reload = WITH_RELOAD;
+#ifdef TIMER_GROUP_SUPPORTS_XTAL_CLOCK
+    config.clk_src = TIMER_SRC_CLK_APB;
+#endif
+    timer_init(TIMER_GROUP_0, TIMER_0, &config);
+
+    /* Timer's counter will initially start from value below.
+       Also, if auto_reload is set, this value will be automatically reload on alarm */
+    timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
+
+    /* Configure the alarm value and the interrupt on alarm. */
+    //timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, TIMER0_INTERVAL_DELAY * TIMER_SCALE);
+    timer_enable_intr(TIMER_GROUP_0, TIMER_0);
+    timer_isr_register(TIMER_GROUP_0, TIMER_0, timer_group0_isr, (void *) TIMER_0, ESP_INTR_FLAG_IRAM, NULL);
+
+	fan_event_t received_data;
+	uint64_t alarm_value;
+	received_data.speed = 0;
+	
+	for(;;){
+		printf("Timer0 is configured  - Cicle - \n");
+		xSemaphoreTake(xBinSemaphoreZS, portMAX_DELAY);
+		xQueueReceive(xQueueDIM, &received_data, 0);
+		switch(received_data.speed){
+		case 0:
+			gpio_set_level(FAN, 0); //FAN switch off
+			break;
+		case 1:
+			timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
+			alarm_value = (uint64_t) SPEED_1 * TIMER_SCALE; // FAN switch on - 50% speed
+			ESP_LOGI(TAG, "[t_isr_handler_ZS] Alarm value [%ld]",  alarm_value);
+			//printf('Alarm value [%ld] ',  alarm_value);
+			timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, alarm_value); // а до скольки считать?	
+			timer_start(TIMER_GROUP_0, TIMER_0); //T0 start
+			break;
+		case 2:
+			gpio_set_level(FAN, 1); //FAN switch on - 100% speed
+			break;
+		}
+	}
+}
+
+
+
+
+/* very high priority task*/
+static void  task_isr_handler_T0(void* arg)
+{
+	/*
+	1 - gpio_set_level(FAN, 1);
+	2 - T1 start;
+	*/
+	
+	/* Select and initialize basic parameters of the timer */
+    timer_config_t config;
+    config.divider = TIMER_DIVIDER;
+    config.counter_dir = TIMER_COUNT_UP;
+    config.counter_en = TIMER_PAUSE;
+    config.alarm_en = TIMER_ALARM_EN;
+    config.intr_type = TIMER_INTR_LEVEL;
+    config.auto_reload = WITH_RELOAD;
+#ifdef TIMER_GROUP_SUPPORTS_XTAL_CLOCK
+    config.clk_src = TIMER_SRC_CLK_APB;
+#endif
+    timer_init(TIMER_GROUP_0, TIMER_1, &config);
+
+    /* Timer's counter will initially start from value below.
+       Also, if auto_reload is set, this value will be automatically reload on alarm */
+    timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
+
+    /* Configure the alarm value and the interrupt on alarm. */
+    //timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, TIMER0_INTERVAL_DELAY * TIMER_SCALE);
+    timer_enable_intr(TIMER_GROUP_0, TIMER_1);
+    timer_isr_register(TIMER_GROUP_0, TIMER_1, timer_group0_isr, (void *) TIMER_1, ESP_INTR_FLAG_IRAM, NULL);
+
+	uint64_t alarm_value;
+	
+	for(;;){
+		printf("[t_isr_handler_T0] Timer1 is configured  - Cicle - \n");
+		xSemaphoreTake(xBinSemaphoreT0, portMAX_DELAY);
+		timer_pause(TIMER_GROUP_0, TIMER_0); //T0 pause
+		timer_set_counter_value(TIMER_GROUP_0, TIMER_1, 0x00000000ULL);
+		alarm_value = (uint64_t) TIMER1_INTERVAL_SWITCH_ON_TRIAC * TIMER_SCALE; // FAN switch on - 50% speed
+		ESP_LOGI(TAG, "[t_isr_handler_T0] Alarm value [%ld]",  alarm_value);
+		//printf('Alarm value [%ld] ',  alarm_value);
+		timer_set_alarm_value(TIMER_GROUP_0, TIMER_1, alarm_value); // а до скольки считать?	
+		timer_start(TIMER_GROUP_0, TIMER_1); //T1 start
+		gpio_set_level(FAN, 1); //FAN switch on 
+
+	}
+}
+
+
+/* very high priority task*/
+static void  task_isr_handler_T1(void* arg)
+{
+	/*
+	1 - gpio_set_level(FAN, 0);
+	*/
+	gpio_set_level(FAN, 0); //FAN switch off
+	
+	for(;;){
+		printf("[t_isr_handler_T1]   - Cicle - \n");
+		xSemaphoreTake(xBinSemaphoreT1, portMAX_DELAY);
+		timer_pause(TIMER_GROUP_0, TIMER_1); //T1 pause
+		gpio_set_level(FAN, 0); //FAN switch off
+	}
+}
+
+
+
+
+
+static void venting(void* arg)
+{
+	fan_event_t send_data;
+	
+	//printf("[venting task] send_data.timer_counter_value = [%d]\n", send_data.speed);
+    send_data.speed = 0;
+	uint8_t i = 0;
+	
     for(;;) {
-		dim = 0;
-		xQueueSendToBack(xQueueDIM, &dim, 100/portTICK_RATE_MS);
-		vTaskDelay(10000 / portTICK_RATE_MS);
-		
-		dim = 5;
-		xQueueSendToBack(xQueueDIM, &dim, 100/portTICK_RATE_MS);
-		vTaskDelay(10000 / portTICK_RATE_MS);
+		while(i <= 2)
+		{
+			ESP_LOGI(TAG, "[venting] send_data.timer_counter_value = [%d]\n", send_data.speed);
+			vTaskDelay(5000 / portTICK_RATE_MS);
+			xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
+			send_data.speed = send_data.speed + i;
+			i++;
+		}
+		send_data.speed = 0;
+		i = 0;
     }
 }
 
-*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 void app_main()
@@ -139,19 +334,29 @@ void app_main()
 	
 	/*********************/
 	
+	
+	
+	esp_err_t err;
 	//install gpio isr service
-    gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
+    err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
     //hook isr handler for specific gpio pin
     gpio_isr_handler_add(ZERO_SENSOR, gpio_isr_handler, (void*) ZERO_SENSOR);
+	ESP_ERROR_CHECK(err);
+	
 
 
 	
-	xQueueISR = xQueueCreate(5, sizeof(uint32_t));
+	xQueueDIM = xQueueCreate(5, sizeof(fan_event_t));
 	
-	//xQueueDIM = xQueueCreate(10, sizeof(uint8_t));
+	xTaskCreate(venting, "test_fan_work", 1024 * 4,  NULL, 11, NULL);
 	
-	xTaskCreate(vCHANGE_SPEED, "CHANGE_SPEED", 2048, NULL, 11, NULL);
-		
+	vSemaphoreCreateBinary(xBinSemaphoreZS);
+	vSemaphoreCreateBinary(xBinSemaphoreT0);
+	vSemaphoreCreateBinary(xBinSemaphoreT1);
 	
-    //xTaskCreate(ON_OFF_FAN, "on off Fan", 2048, NULL, 10, NULL);
+	xTaskCreate(task_isr_handler_ZS, "task isr handler Zero Sensor", 1024 * 4,  NULL, 12, NULL);
+	xTaskCreate(task_isr_handler_T0, "task isr handler T0", 1024 * 4,  NULL, 12, NULL);
+	xTaskCreate(task_isr_handler_T1, "task isr handler T1", 1024 * 4,  NULL, 12, NULL);
+	
+	
 }
