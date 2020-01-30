@@ -17,7 +17,7 @@
 #include "driver/periph_ctrl.h"
 #include "driver/timer.h"
 
-#include "rom/ets_sys.h"
+//#include "esp32/rom/ets_sys.h"
 
 
 
@@ -36,11 +36,11 @@
 static const char* TAG = "VentSys";
 
 #define FAN				32
-
-#define GPIO_OUTPUT_PIN_SEL  ((1ULL<<FAN))
+#define GPIO_OUTPUT_PIN_SEL  (1ULL<<FAN)
 
 #define ZERO_SENSOR			34
-#define GPIO_INPUT_PIN_SEL  ((1ULL<<ZERO_SENSOR))
+#define GPIO_INPUT_PIN_SEL  (1ULL<<ZERO_SENSOR)
+
 #define ESP_INTR_FLAG_DEFAULT 0
 
 #define TIMER_DIVIDER         16  //  Hardware timer clock divider
@@ -53,6 +53,18 @@ static const char* TAG = "VentSys";
 typedef struct {
     uint8_t speed; //0, 1 ,2
 } fan_event_t;
+
+
+portBASE_TYPE xStatus_venting;
+portBASE_TYPE xStatus_task_isr_handler_ZS;
+portBASE_TYPE xStatus_task_isr_handler_T0;
+portBASE_TYPE xStatus_task_isr_handler_T1;
+
+
+xTaskHandle xVenting_Handle;
+xTaskHandle xZS_Handle;
+xTaskHandle xT0_Handle;
+xTaskHandle xT1_Handle;
 
 xQueueHandle xQueueDIM;
 xSemaphoreHandle xBinSemaphoreZS;
@@ -129,6 +141,10 @@ void IRAM_ATTR timer_group0_isr(void *para)
 /* very high priority task*/
 static void  task_isr_handler_ZS(void* arg)
 {
+	UBaseType_t uxPriority;
+	uxPriority = uxTaskPriorityGet(NULL);
+	ESP_LOGI(TAG, "[task_isr_handler_ZS] Priority get = [%d]",  (uint8_t)uxPriority);
+	
 	/*
 	0 - off
 	1 - 50 % = 0.005mS
@@ -163,6 +179,7 @@ static void  task_isr_handler_ZS(void* arg)
 	
 	for(;;){
 		printf("Timer0 is configured  - Cicle - \n");
+		ESP_LOGI(TAG, "[task_isr_handler_ZS] Timer0 is configured  - Cicle -");
 		xSemaphoreTake(xBinSemaphoreZS, portMAX_DELAY);
 		xQueueReceive(xQueueDIM, &received_data, 0);
 		switch(received_data.speed){
@@ -172,7 +189,7 @@ static void  task_isr_handler_ZS(void* arg)
 		case 1:
 			timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
 			alarm_value = (uint64_t) SPEED_1 * TIMER_SCALE; // FAN switch on - 50% speed
-			ESP_LOGI(TAG, "[t_isr_handler_ZS] Alarm value [%ld]",  alarm_value);
+			ESP_LOGI(TAG, "[t_isr_handler_ZS] Alarm value [%d]",  (uint32_t)alarm_value);
 			//printf('Alarm value [%ld] ',  alarm_value);
 			timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, alarm_value); // а до скольки считать?	
 			timer_start(TIMER_GROUP_0, TIMER_0); //T0 start
@@ -190,6 +207,9 @@ static void  task_isr_handler_ZS(void* arg)
 /* very high priority task*/
 static void  task_isr_handler_T0(void* arg)
 {
+	UBaseType_t uxPriority;
+	uxPriority = uxTaskPriorityGet(NULL);
+	ESP_LOGI(TAG, "[task_isr_handler_T0] Priority get = [%d]",  (uint8_t)uxPriority);
 	/*
 	1 - gpio_set_level(FAN, 1);
 	2 - T1 start;
@@ -220,13 +240,13 @@ static void  task_isr_handler_T0(void* arg)
 	uint64_t alarm_value;
 	
 	for(;;){
-		printf("[t_isr_handler_T0] Timer1 is configured  - Cicle - \n");
+		//printf("[t_isr_handler_T0] Timer1 is configured  - Cicle - \n");
+		ESP_LOGI(TAG, "[task_isr_handler_T0] Timer1 is configured  - Cicle -");
 		xSemaphoreTake(xBinSemaphoreT0, portMAX_DELAY);
 		timer_pause(TIMER_GROUP_0, TIMER_0); //T0 pause
 		timer_set_counter_value(TIMER_GROUP_0, TIMER_1, 0x00000000ULL);
 		alarm_value = (uint64_t) TIMER1_INTERVAL_SWITCH_ON_TRIAC * TIMER_SCALE; // FAN switch on - 50% speed
-		ESP_LOGI(TAG, "[t_isr_handler_T0] Alarm value [%ld]",  alarm_value);
-		//printf('Alarm value [%ld] ',  alarm_value);
+		ESP_LOGI(TAG, "[t_isr_handler_T0] Alarm value [%d]",  (uint32_t)alarm_value);
 		timer_set_alarm_value(TIMER_GROUP_0, TIMER_1, alarm_value); // а до скольки считать?	
 		timer_start(TIMER_GROUP_0, TIMER_1); //T1 start
 		gpio_set_level(FAN, 1); //FAN switch on 
@@ -238,6 +258,9 @@ static void  task_isr_handler_T0(void* arg)
 /* very high priority task*/
 static void  task_isr_handler_T1(void* arg)
 {
+	UBaseType_t uxPriority;
+	uxPriority = uxTaskPriorityGet(NULL);
+	ESP_LOGI(TAG, "[task_isr_handler_T1] Priority get = [%d]",  (uint8_t)uxPriority);
 	/*
 	1 - gpio_set_level(FAN, 0);
 	*/
@@ -278,40 +301,6 @@ static void venting(void* arg)
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 void app_main()
 {
 	/*** triac control ***/
@@ -325,10 +314,10 @@ void app_main()
 	/*********************/
 	
 	/*** zero sensor ***/
-    io_conf.intr_type = GPIO_INTR_ANYEDGE; //interrupt ANYEDGE
+    io_conf.intr_type = GPIO_PIN_INTR_ANYEDGE; //interrupt ANYEDGE
+	io_conf.mode = GPIO_MODE_INPUT; //set as input mode
     io_conf.pin_bit_mask = GPIO_INPUT_PIN_SEL; //bit mask of the pins, use GPIO34 here
-    io_conf.mode = GPIO_MODE_INPUT; //set as input mode
-    io_conf.pull_up_en = 0; //enable pull-up mode
+    io_conf.pull_up_en = 1; //enable pull-up mode
     io_conf.pull_down_en = 0; //disable pull-down_cw mode - отключитли подтяжку к земле
     gpio_config(&io_conf);
 	
@@ -336,27 +325,45 @@ void app_main()
 	
 	
 	
-	esp_err_t err;
+	//esp_err_t err;
 	//install gpio isr service
-    err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    gpio_install_isr_service(ESP_INTR_FLAG_IRAM);// err = 
     //hook isr handler for specific gpio pin
     gpio_isr_handler_add(ZERO_SENSOR, gpio_isr_handler, (void*) ZERO_SENSOR);
-	ESP_ERROR_CHECK(err);
+	//ESP_ERROR_CHECK(err);
 	
 
 
 	
 	xQueueDIM = xQueueCreate(5, sizeof(fan_event_t));
 	
-	xTaskCreate(venting, "test_fan_work", 1024 * 4,  NULL, 11, NULL);
+	xStatus_venting = xTaskCreate(venting, "test_fan_work", 1024 * 4,  NULL, 9, NULL);
+	if(xStatus_venting == pdPASS)
+		ESP_LOGI(TAG, "[app_main] Task [test_fan_work] is created");
+	else
+		ESP_LOGI(TAG, "[app_main] Task [test_fan_work] is not created");
 	
 	vSemaphoreCreateBinary(xBinSemaphoreZS);
 	vSemaphoreCreateBinary(xBinSemaphoreT0);
 	vSemaphoreCreateBinary(xBinSemaphoreT1);
 	
-	xTaskCreate(task_isr_handler_ZS, "task isr handler Zero Sensor", 1024 * 4,  NULL, 12, NULL);
-	xTaskCreate(task_isr_handler_T0, "task isr handler T0", 1024 * 4,  NULL, 12, NULL);
-	xTaskCreate(task_isr_handler_T1, "task isr handler T1", 1024 * 4,  NULL, 12, NULL);
+	xStatus_task_isr_handler_ZS = xTaskCreate(task_isr_handler_ZS, "task isr handler Zero Sensor", 1024 * 4,  NULL, 12, &xZS_Handle);
+	if(xStatus_task_isr_handler_ZS == pdPASS)
+		ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is created");
+	else
+		ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is not created");
 	
 	
+	xStatus_task_isr_handler_T0 = xTaskCreate(task_isr_handler_T0, "task isr handler T0", 1024 * 4,  NULL, 11, &xT0_Handle);
+	if(xStatus_task_isr_handler_T0)
+		ESP_LOGI(TAG, "[app_main] Task [task isr handler T0] is created");
+	else
+		ESP_LOGI(TAG, "[app_main] Task [task isr handler T0] is not created");
+	
+	
+	xStatus_task_isr_handler_T1 = xTaskCreate(task_isr_handler_T1, "task isr handler T1", 1024 * 4,  NULL, 10, &xT1_Handle);
+	if(xStatus_task_isr_handler_T1)
+		ESP_LOGI(TAG, "[app_main] Task [task isr handler T1] is created");
+	else
+		ESP_LOGI(TAG, "[app_main] Task [task isr handler T1] is not created");
 }
