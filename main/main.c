@@ -9,19 +9,28 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+
+#include <unistd.h>
+#include "esp_timer.h"
+
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
-#include "freertos/semphr.h"
-#include "driver/gpio.h"
-#include "driver/periph_ctrl.h"
-#include "driver/timer.h"
 
-//#include "esp32/rom/ets_sys.h"
+#include "driver/gpio.h"
+
+
+
 
 
 
 #include "esp_log.h"
+
+
+static void startingTRIAC_timer_callback(void* arg);
+static void delay_timer_callback(void* arg);
+
 
 
 /**
@@ -36,19 +45,16 @@
 static const char* TAG = "VentSys";
 
 #define FAN				32
-#define GPIO_OUTPUT_PIN_SEL  (1ULL<<FAN)
+#define GPIO_OUTPUT_PIN_SEL  ((1ULL<<FAN))
 
 #define ZERO_SENSOR			34
-#define GPIO_INPUT_PIN_SEL  (1ULL<<ZERO_SENSOR)
+#define GPIO_INPUT_PIN_SEL  ((1ULL<<ZERO_SENSOR))
 
 #define ESP_INTR_FLAG_DEFAULT 0
 
-#define TIMER_DIVIDER         16  //  Hardware timer clock divider
-#define TIMER_SCALE           (TIMER_BASE_CLK / TIMER_DIVIDER)  // convert counter value to seconds
-#define TIMER1_INTERVAL_SWITCH_ON_TRIAC   (0.00005) // for switch on TRIAC (sec) - 50uS
-#define SPEED_1   (0.005)   // for firing angle to be 90' for 220V 50Hz AC signal, we need to have a delay of 5 ms
-#define WITHOUT_RELOAD   0        
-#define WITH_RELOAD      1     
+
+
+
 
 typedef struct {
     uint8_t speed; //0, 1 ,2
@@ -57,82 +63,22 @@ typedef struct {
 
 portBASE_TYPE xStatus_venting;
 portBASE_TYPE xStatus_task_isr_handler_ZS;
-portBASE_TYPE xStatus_task_isr_handler_T0;
-portBASE_TYPE xStatus_task_isr_handler_T1;
 
 
 xTaskHandle xVenting_Handle;
 xTaskHandle xZS_Handle;
-xTaskHandle xT0_Handle;
-xTaskHandle xT1_Handle;
 
+static xQueueHandle gpio_evt_queue = NULL;
 xQueueHandle xQueueDIM;
-xSemaphoreHandle xBinSemaphoreZS;
-xSemaphoreHandle xBinSemaphoreT0;
-xSemaphoreHandle xBinSemaphoreT1;
+
+
 
  static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
     uint32_t gpio_num = (uint32_t) arg;
-	static portBASE_TYPE xHigherPriorityTaskWoken;
-	xHigherPriorityTaskWoken = pdFALSE;
-	ESP_LOGI(TAG, "[gpio_isr_handler] inside interrupt handler\n");
-	if(gpio_num == ZERO_SENSOR){
-		ESP_LOGI(TAG, "[gpio_isr_handler] event ZERO_SENSOR \n");
-		xSemaphoreGiveFromISR(xBinSemaphoreZS, &xHigherPriorityTaskWoken);
-		if(xHigherPriorityTaskWoken)
-		{
-			ESP_LOGI(TAG, "[gpio_isr_handler] xHigherPriorityTaskWoken = TRUE - Yield");
-			portYIELD_FROM_ISR();
-		}
-	}
+	xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
 }
 
-
-
-
-/*
- * Timer group0 ISR handler
- * switch on TRIAC
- * switch off TRIAC
- */
-void IRAM_ATTR timer_group0_isr(void *para)
-{
-    //timer_spinlock_take(TIMER_GROUP_0);
-    timer_idx_t timer_idx = (timer_idx_t) para;
-	ESP_LOGI(TAG, "[timer_group0_isr] para = %d", timer_idx);
-	//uint32_t timer_intr = timer_group_get_intr_status_in_isr(TIMER_GROUP_0);
-	timer_intr_t timer_intr = timer_group_intr_get_in_isr(TIMER_GROUP_0);
-	
-	
-	static portBASE_TYPE xHigherPriorityTaskWoken;
-	xHigherPriorityTaskWoken = pdFALSE;
-	ESP_LOGI(TAG, "[timer_group0_isr] in ISR");
-	
-
-	if (timer_intr & TIMER_INTR_T0) {
-		ESP_LOGI(TAG, "[timer_group0_isr] T0 event");
-		timer_group_intr_clr_in_isr(TIMER_GROUP_0, TIMER_0);
-		xSemaphoreGiveFromISR(xBinSemaphoreT0, &xHigherPriorityTaskWoken);
-		if(xHigherPriorityTaskWoken)
-		{
-			portYIELD_FROM_ISR();
-		}
-	} 
-	else if (timer_intr & TIMER_INTR_T1) {
-		ESP_LOGI(TAG, "[timer_group0_isr] T1 event");
-        timer_group_intr_clr_in_isr(TIMER_GROUP_0, TIMER_1);
-		xSemaphoreGiveFromISR(xBinSemaphoreT1, &xHigherPriorityTaskWoken);
-		if(xHigherPriorityTaskWoken)
-		{
-			portYIELD_FROM_ISR();
-		}
-    } 
-    /* After the alarm has been triggered we need enable it again, so it is triggered the next time */
-	ESP_LOGI(TAG, "[timer_group0_isr] enable alarm in isr");
-    timer_group_enable_alarm_in_isr(TIMER_GROUP_0, timer_idx);
-    //timer_spinlock_give(TIMER_GROUP_0);
-}
 
 
 
@@ -151,158 +97,95 @@ static void  task_isr_handler_ZS(void* arg)
 	2 - 100 % = 0.01mS
 	*/
 	
-	/* Select and initialize basic parameters of the timer */
-    timer_config_t config;
-    config.divider = TIMER_DIVIDER;
-    config.counter_dir = TIMER_COUNT_UP;
-    config.counter_en = TIMER_PAUSE;
-    config.alarm_en = TIMER_ALARM_EN;
-    config.intr_type = TIMER_INTR_LEVEL;
-    config.auto_reload = WITH_RELOAD;
-#ifdef TIMER_GROUP_SUPPORTS_XTAL_CLOCK
-    config.clk_src = TIMER_SRC_CLK_APB;
-#endif
-    timer_init(TIMER_GROUP_0, TIMER_0, &config);
-
-    /* Timer's counter will initially start from value below.
-       Also, if auto_reload is set, this value will be automatically reload on alarm */
-    timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
-
-    /* Configure the alarm value and the interrupt on alarm. */
-    //timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, TIMER0_INTERVAL_DELAY * TIMER_SCALE);
-    timer_enable_intr(TIMER_GROUP_0, TIMER_0);
-    timer_isr_register(TIMER_GROUP_0, TIMER_0, timer_group0_isr, (void *) TIMER_0, ESP_INTR_FLAG_IRAM, NULL);
-
+	/* Create a one-shot timer for starting TRIAC */
+	const esp_timer_create_args_t startingTRIAC_timer_args = {
+            .callback = &startingTRIAC_timer_callback,
+            /* name is optional, but may help identify the timer when debugging */
+            .name = "starting TRIAC"
+    };
+    esp_timer_handle_t startingTRIAC_timer;
+    ESP_ERROR_CHECK(esp_timer_create(&startingTRIAC_timer_args, &startingTRIAC_timer));
+	
+	
+	
+	/* Create a one-shot timer for delay RMS */
+	const esp_timer_create_args_t delay_timer_args = {
+            .callback = &delay_timer_callback,
+			.arg = (void*) startingTRIAC_timer,
+            .name = "delay timer"
+    };
+	esp_timer_handle_t delay_timer;
+    ESP_ERROR_CHECK(esp_timer_create(&delay_timer_args, &delay_timer));
+	
+	
+	uint32_t io_num;
 	fan_event_t received_data;
-	uint64_t alarm_value;
-	received_data.speed = 0;
+	uint8_t speed = 0;
+	ESP_LOGI(TAG, "[task_isr_handler_ZS]esp_timer is configured");
 	
 	for(;;){
-		printf("Timer0 is configured  - Cicle - \n");
-		ESP_LOGI(TAG, "[task_isr_handler_ZS] Timer0 is configured  - Cicle -");
-		xSemaphoreTake(xBinSemaphoreZS, portMAX_DELAY);
+		//ESP_LOGI(TAG, "[task_isr_handler_ZS] - Cicle -");
+		
+		
+		xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY);
+			//ESP_LOGI(TAG, "[task_isr_handler_ZS] ionum = %d", io_num);
+		
+		
 		xQueueReceive(xQueueDIM, &received_data, 0);
-		switch(received_data.speed){
+		speed = received_data.speed;
+		
+		//ESP_LOGI(TAG, "[task_isr_handler_ZS] speed = %d", speed);
+		switch(speed){
 		case 0:
 			gpio_set_level(FAN, 0); //FAN switch off
+			//ESP_LOGI(TAG, "[task_isr_handler_ZS] Fan off");
 			break;
 		case 1:
-			timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
-			alarm_value = (uint64_t) SPEED_1 * TIMER_SCALE; // FAN switch on - 50% speed
-			ESP_LOGI(TAG, "[t_isr_handler_ZS] Alarm value [%d]",  (uint32_t)alarm_value);
-			//printf('Alarm value [%ld] ',  alarm_value);
-			timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, alarm_value); // а до скольки считать?	
-			timer_start(TIMER_GROUP_0, TIMER_0); //T0 start
+			/* Start the one-shot timer */
+			esp_timer_start_once(delay_timer, 3000);
+			//ESP_LOGI(TAG, "[task_isr_handler_ZS] Started timer, time since boot: %lld us", esp_timer_get_time());
 			break;
 		case 2:
 			gpio_set_level(FAN, 1); //FAN switch on - 100% speed
+			//ESP_LOGI(TAG, "[task_isr_handler_ZS] FAN ON speed = 2");
 			break;
 		}
 	}
 }
-
-
-
-
-/* very high priority task*/
-static void  task_isr_handler_T0(void* arg)
-{
-	UBaseType_t uxPriority;
-	uxPriority = uxTaskPriorityGet(NULL);
-	ESP_LOGI(TAG, "[task_isr_handler_T0] Priority get = [%d]",  (uint8_t)uxPriority);
-	/*
-	1 - gpio_set_level(FAN, 1);
-	2 - T1 start;
-	*/
-	
-	/* Select and initialize basic parameters of the timer */
-    timer_config_t config;
-    config.divider = TIMER_DIVIDER;
-    config.counter_dir = TIMER_COUNT_UP;
-    config.counter_en = TIMER_PAUSE;
-    config.alarm_en = TIMER_ALARM_EN;
-    config.intr_type = TIMER_INTR_LEVEL;
-    config.auto_reload = WITH_RELOAD;
-#ifdef TIMER_GROUP_SUPPORTS_XTAL_CLOCK
-    config.clk_src = TIMER_SRC_CLK_APB;
-#endif
-    timer_init(TIMER_GROUP_0, TIMER_1, &config);
-
-    /* Timer's counter will initially start from value below.
-       Also, if auto_reload is set, this value will be automatically reload on alarm */
-    timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
-
-    /* Configure the alarm value and the interrupt on alarm. */
-    //timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, TIMER0_INTERVAL_DELAY * TIMER_SCALE);
-    timer_enable_intr(TIMER_GROUP_0, TIMER_1);
-    timer_isr_register(TIMER_GROUP_0, TIMER_1, timer_group0_isr, (void *) TIMER_1, ESP_INTR_FLAG_IRAM, NULL);
-
-	uint64_t alarm_value;
-	
-	for(;;){
-		//printf("[t_isr_handler_T0] Timer1 is configured  - Cicle - \n");
-		ESP_LOGI(TAG, "[task_isr_handler_T0] Timer1 is configured  - Cicle -");
-		xSemaphoreTake(xBinSemaphoreT0, portMAX_DELAY);
-		timer_pause(TIMER_GROUP_0, TIMER_0); //T0 pause
-		timer_set_counter_value(TIMER_GROUP_0, TIMER_1, 0x00000000ULL);
-		alarm_value = (uint64_t) TIMER1_INTERVAL_SWITCH_ON_TRIAC * TIMER_SCALE; // FAN switch on - 50% speed
-		ESP_LOGI(TAG, "[t_isr_handler_T0] Alarm value [%d]",  (uint32_t)alarm_value);
-		timer_set_alarm_value(TIMER_GROUP_0, TIMER_1, alarm_value); // а до скольки считать?	
-		timer_start(TIMER_GROUP_0, TIMER_1); //T1 start
-		gpio_set_level(FAN, 1); //FAN switch on 
-
-	}
-}
-
-
-/* very high priority task*/
-static void  task_isr_handler_T1(void* arg)
-{
-	UBaseType_t uxPriority;
-	uxPriority = uxTaskPriorityGet(NULL);
-	ESP_LOGI(TAG, "[task_isr_handler_T1] Priority get = [%d]",  (uint8_t)uxPriority);
-	/*
-	1 - gpio_set_level(FAN, 0);
-	*/
-	gpio_set_level(FAN, 0); //FAN switch off
-	
-	for(;;){
-		printf("[t_isr_handler_T1]   - Cicle - \n");
-		xSemaphoreTake(xBinSemaphoreT1, portMAX_DELAY);
-		timer_pause(TIMER_GROUP_0, TIMER_1); //T1 pause
-		gpio_set_level(FAN, 0); //FAN switch off
-	}
-}
-
-
 
 
 
 static void venting(void* arg)
 {
 	fan_event_t send_data;
+    send_data.speed = 1;
 	
-	//printf("[venting task] send_data.timer_counter_value = [%d]\n", send_data.speed);
-    send_data.speed = 0;
-	uint8_t i = 0;
 	
     for(;;) {
-		while(i <= 2)
-		{
-			ESP_LOGI(TAG, "[venting] send_data.timer_counter_value = [%d]\n", send_data.speed);
-			vTaskDelay(5000 / portTICK_RATE_MS);
-			xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
+		send_data.speed = 1;
+		xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
+		ESP_LOGI(TAG, "[venting] send_data.speed = %d\n", send_data.speed);
+		vTaskDelay(3000 / portTICK_RATE_MS);
+		/*
+		for(uint8_t i=0; i<=2; i++){
 			send_data.speed = send_data.speed + i;
-			i++;
+			ESP_LOGI(TAG, "[venting] send_data.speed = %d\n", send_data.speed);
+			xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
+			vTaskDelay(5000 / portTICK_RATE_MS);
+			ESP_LOGI(TAG, "[venting] i = [%d]\n", i);
 		}
-		send_data.speed = 0;
-		i = 0;
+		*/
+		//vTaskDelay(1000 / portTICK_RATE_MS);
     }
 }
 
 
+
+
+
 void app_main()
 {
+	
 	/*** triac control ***/
     gpio_config_t io_conf;
     io_conf.intr_type = GPIO_PIN_INTR_DISABLE; //disable interrupt
@@ -317,7 +200,7 @@ void app_main()
     io_conf.intr_type = GPIO_PIN_INTR_ANYEDGE; //interrupt ANYEDGE
 	io_conf.mode = GPIO_MODE_INPUT; //set as input mode
     io_conf.pin_bit_mask = GPIO_INPUT_PIN_SEL; //bit mask of the pins, use GPIO34 here
-    io_conf.pull_up_en = 1; //enable pull-up mode
+    io_conf.pull_up_en = 0; //enable pull-up mode
     io_conf.pull_down_en = 0; //disable pull-down_cw mode - отключитли подтяжку к земле
     gpio_config(&io_conf);
 	
@@ -325,45 +208,65 @@ void app_main()
 	
 	
 	
-	//esp_err_t err;
+	esp_err_t err;
 	//install gpio isr service
-    gpio_install_isr_service(ESP_INTR_FLAG_IRAM);// err = 
+    err = gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);//  
     //hook isr handler for specific gpio pin
     gpio_isr_handler_add(ZERO_SENSOR, gpio_isr_handler, (void*) ZERO_SENSOR);
-	//ESP_ERROR_CHECK(err);
+	ESP_ERROR_CHECK(err);
 	
-
-
 	
+	
+	gpio_evt_queue = xQueueCreate(5, sizeof(uint32_t));
 	xQueueDIM = xQueueCreate(5, sizeof(fan_event_t));
 	
-	xStatus_venting = xTaskCreate(venting, "test_fan_work", 1024 * 4,  NULL, 9, NULL);
+	xStatus_venting = xTaskCreate(venting, "test_fan_work", 2048,  NULL, 5, NULL);
 	if(xStatus_venting == pdPASS)
 		ESP_LOGI(TAG, "[app_main] Task [test_fan_work] is created");
 	else
 		ESP_LOGI(TAG, "[app_main] Task [test_fan_work] is not created");
 	
-	vSemaphoreCreateBinary(xBinSemaphoreZS);
-	vSemaphoreCreateBinary(xBinSemaphoreT0);
-	vSemaphoreCreateBinary(xBinSemaphoreT1);
 	
-	xStatus_task_isr_handler_ZS = xTaskCreate(task_isr_handler_ZS, "task isr handler Zero Sensor", 1024 * 4,  NULL, 12, &xZS_Handle);
+	xStatus_task_isr_handler_ZS = xTaskCreate(task_isr_handler_ZS, "task isr handler Zero Sensor", 1024 * 4,  NULL, 8, NULL); //&xZS_Handle
 	if(xStatus_task_isr_handler_ZS == pdPASS)
 		ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is created");
 	else
 		ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is not created");
 	
 	
-	xStatus_task_isr_handler_T0 = xTaskCreate(task_isr_handler_T0, "task isr handler T0", 1024 * 4,  NULL, 11, &xT0_Handle);
-	if(xStatus_task_isr_handler_T0)
-		ESP_LOGI(TAG, "[app_main] Task [task isr handler T0] is created");
-	else
-		ESP_LOGI(TAG, "[app_main] Task [task isr handler T0] is not created");
+	
+	//xTaskCreate(terminator, "task terminator", 1024,  NULL, 9, NULL);
 	
 	
-	xStatus_task_isr_handler_T1 = xTaskCreate(task_isr_handler_T1, "task isr handler T1", 1024 * 4,  NULL, 10, &xT1_Handle);
-	if(xStatus_task_isr_handler_T1)
-		ESP_LOGI(TAG, "[app_main] Task [task isr handler T1] is created");
-	else
-		ESP_LOGI(TAG, "[app_main] Task [task isr handler T1] is not created");
+	
+	
+}
+
+
+
+
+
+
+static void delay_timer_callback(void* arg)
+{
+    //int64_t time_since_boot = esp_timer_get_time();
+    //ESP_LOGI(TAG, "[delay_timer_callback] One-shot timer called, time since boot: %lld us", time_since_boot);
+    esp_timer_handle_t startingTRIAC_timer_handle = (esp_timer_handle_t) arg;
+	gpio_set_level(FAN, 1); //FAN switch on 
+	//ESP_LOGI(TAG, "[task_isr_handler_ZS] Fan on half");
+    /* To start the timer which is running, need to stop it first */
+    //ESP_ERROR_CHECK(esp_timer_stop(startingTRIAC_timer_handle));
+    ESP_ERROR_CHECK(esp_timer_start_once(startingTRIAC_timer_handle, 100));
+    //time_since_boot = esp_timer_get_time();
+    //ESP_LOGI(TAG, "[delay_timer_callback] startingTRIAC_timer start once");
+	
+}
+
+
+static void startingTRIAC_timer_callback(void* arg)
+{
+	gpio_set_level(FAN, 0); //FAN switch off
+	//ESP_LOGI(TAG, "[task_isr_handler_ZS] FAN OFF half");
+    //int64_t time_since_boot = esp_timer_get_time();
+    //ESP_LOGI(TAG, "[startingTRIAC_timer_callback] startingTRIAC_timer called, time since boot: %lld us", time_since_boot);
 }
