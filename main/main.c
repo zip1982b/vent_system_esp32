@@ -160,46 +160,44 @@ static void  task_isr_handler_ZS(void* arg)
 
 
 
-static void venting(void* arg)
-{
-	fan_event_t send_data;
-    //send_data.speed = 1;
-	
-	
-    for(;;) {
-		send_data.speed = 0;
-		//xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
-		//ESP_LOGI(TAG, "[venting] send_data.speed = %d\n", send_data.speed);
-		//vTaskDelay(3000 / portTICK_RATE_MS);
-		
-		for(uint8_t i=0; i<=2; i++){
-			send_data.speed = i;
-			ESP_LOGI(TAG, "[venting] send_data.speed = %d\n", send_data.speed);
-			xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
-			vTaskDelay(5000 / portTICK_RATE_MS);
-			ESP_LOGI(TAG, "[venting] i = [%d]\n", i);
-		}
-    }
-}
 
 
 void DHT_task(void *pvParameter)
 {
+	fan_event_t send_data;
     setDHTgpio(GPIO_NUM_33);
     ESP_LOGI(TAG_dht, "Starting DHT Task\n\n");
-
+	float H;
+	float T;
+	float target_humidity = 30.2;// %
+	uint8_t delta = 2;
+	
+	
     while (1)
     {
-        ESP_LOGI(TAG_dht, "=== Reading DHT ===\n");
+        //ESP_LOGI(TAG_dht, "=== Reading DHT ===\n");
         int ret = readDHT();
 
         errorHandler(ret);
-
-        ESP_LOGI(TAG_dht, "Hum: %.1f Tmp: %.1f\n", getHumidity(), getTemperature());
-
+		
+		H = getHumidity();
+		T = getTemperature();
+		
+        ESP_LOGI(TAG_dht, "Hum: %.1f Tmp: %.1f", H, T);
+		
+		if(H <= target_humidity - delta){
+			ESP_LOGI(TAG_dht, "[DHT_task] Fan speed = 1");
+			send_data.speed = 1;
+			xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
+		}
+		else if(H > target_humidity + delta){
+			ESP_LOGI(TAG_dht, "[DHT_task] Fan speed = 0");
+			send_data.speed = 0;
+			xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
+		}
         // -- wait at least 2 sec before reading again ------------
         // The interval of whole process must be beyond 2 seconds !!
-        vTaskDelay(2000 / portTICK_RATE_MS);
+        vTaskDelay(3000 / portTICK_RATE_MS);
     }
 }
 
@@ -240,11 +238,14 @@ void app_main()
 	vSemaphoreCreateBinary(xBinSemaphoreZS);
 	xQueueDIM = xQueueCreate(5, sizeof(fan_event_t));
 	
+	/*
 	xStatus_venting = xTaskCreate(venting, "test_fan_work", 2048,  NULL, 5, NULL);
 	if(xStatus_venting == pdPASS)
 		ESP_LOGI(TAG, "[app_main] Task [test_fan_work] is created");
 	else
 		ESP_LOGI(TAG, "[app_main] Task [test_fan_work] is not created");
+	*/
+	
 	
 	
 	xStatus_task_isr_handler_ZS = xTaskCreate(task_isr_handler_ZS, "task isr handler Zero Sensor", 1024 * 4,  NULL, 8, NULL); //&xZS_Handle
