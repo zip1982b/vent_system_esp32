@@ -22,6 +22,7 @@
 
 #include "esp_log.h"
 
+#include "DHT.h"
 
 
 
@@ -42,6 +43,9 @@ static void delay_timer_callback(void* arg);
  */
  
 static const char* TAG = "VentSys";
+static const char* TAG_dht = "DHT22";
+
+
 
 #define FAN				32
 #define GPIO_OUTPUT_PIN_SEL  ((1ULL<<FAN))
@@ -179,6 +183,26 @@ static void venting(void* arg)
 }
 
 
+void DHT_task(void *pvParameter)
+{
+    setDHTgpio(GPIO_NUM_33);
+    ESP_LOGI(TAG_dht, "Starting DHT Task\n\n");
+
+    while (1)
+    {
+        ESP_LOGI(TAG_dht, "=== Reading DHT ===\n");
+        int ret = readDHT();
+
+        errorHandler(ret);
+
+        ESP_LOGI(TAG_dht, "Hum: %.1f Tmp: %.1f\n", getHumidity(), getTemperature());
+
+        // -- wait at least 2 sec before reading again ------------
+        // The interval of whole process must be beyond 2 seconds !!
+        vTaskDelay(2000 / portTICK_RATE_MS);
+    }
+}
+
 
 
 
@@ -229,8 +253,19 @@ void app_main()
 	else
 		ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is not created");
 
-	//xTaskCreate(terminator, "task terminator", 1024,  NULL, 9, NULL);
+	
+	 //Initialize NVS
+    //esp_err_t ret = nvs_flash_init();
+    //if (ret == ESP_ERR_NVS_NO_FREE_PAGES)
+    //{
+        //ESP_ERROR_CHECK(nvs_flash_erase());
+        //ret = nvs_flash_init();
+    //}
+    //ESP_ERROR_CHECK(ret);
 
+    //esp_log_level_set("*", ESP_LOG_INFO);
+
+    xTaskCreate(&DHT_task, "DHT_task", 2048, NULL, 5, NULL);
 }
 
 
