@@ -18,13 +18,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
-
 #include "driver/gpio.h"
-
-
-
-
-
 
 #include "esp_log.h"
 
@@ -103,12 +97,6 @@ static void  task_isr_handler_ZS(void* arg)
 	UBaseType_t uxPriority;
 	uxPriority = uxTaskPriorityGet(NULL);
 	ESP_LOGI(TAG, "[task_isr_handler_ZS] Priority get = [%d]",  (uint8_t)uxPriority);
-	
-	/*
-	0 - off
-	1 - 50 % = 0.005mS
-	2 - 100 % = 0.01mS
-	*/
 	
 	/* Create a one-shot timer for starting TRIAC */
 	const esp_timer_create_args_t startingTRIAC_timer_args = {
