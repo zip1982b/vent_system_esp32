@@ -17,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 
 #include "driver/gpio.h"
 
@@ -26,6 +27,10 @@
 
 
 #include "esp_log.h"
+
+
+
+
 
 
 static void startingTRIAC_timer_callback(void* arg);
@@ -68,15 +73,23 @@ portBASE_TYPE xStatus_task_isr_handler_ZS;
 xTaskHandle xVenting_Handle;
 xTaskHandle xZS_Handle;
 
-static xQueueHandle gpio_evt_queue = NULL;
+//static xQueueHandle gpio_evt_queue = NULL;
 xQueueHandle xQueueDIM;
-
+xSemaphoreHandle xBinSemaphoreZS;
 
 
  static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
     uint32_t gpio_num = (uint32_t) arg;
-	xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
+	static portBASE_TYPE xHigherPriorityTaskWoken;
+	xHigherPriorityTaskWoken = pdFALSE;
+	if(gpio_num == ZERO_SENSOR){
+		xSemaphoreGiveFromISR(xBinSemaphoreZS, &xHigherPriorityTaskWoken);
+		if(xHigherPriorityTaskWoken)
+		{
+			portYIELD_FROM_ISR();
+		}
+	}
 }
 
 
@@ -126,8 +139,8 @@ static void  task_isr_handler_ZS(void* arg)
 	for(;;){
 		//ESP_LOGI(TAG, "[task_isr_handler_ZS] - Cicle -");
 		
-		
-		xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY);
+		xSemaphoreTake(xBinSemaphoreZS, portMAX_DELAY);
+		//xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY);
 			//ESP_LOGI(TAG, "[task_isr_handler_ZS] ionum = %d", io_num);
 		
 		
@@ -142,7 +155,7 @@ static void  task_isr_handler_ZS(void* arg)
 			break;
 		case 1:
 			/* Start the one-shot timer */
-			esp_timer_start_once(delay_timer, 3000);
+			esp_timer_start_once(delay_timer, 5000);
 			//ESP_LOGI(TAG, "[task_isr_handler_ZS] Started timer, time since boot: %lld us", esp_timer_get_time());
 			break;
 		case 2:
@@ -158,24 +171,22 @@ static void  task_isr_handler_ZS(void* arg)
 static void venting(void* arg)
 {
 	fan_event_t send_data;
-    send_data.speed = 1;
+    //send_data.speed = 1;
 	
 	
     for(;;) {
-		send_data.speed = 1;
-		xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
-		ESP_LOGI(TAG, "[venting] send_data.speed = %d\n", send_data.speed);
-		vTaskDelay(3000 / portTICK_RATE_MS);
-		/*
+		send_data.speed = 0;
+		//xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
+		//ESP_LOGI(TAG, "[venting] send_data.speed = %d\n", send_data.speed);
+		//vTaskDelay(3000 / portTICK_RATE_MS);
+		
 		for(uint8_t i=0; i<=2; i++){
-			send_data.speed = send_data.speed + i;
+			send_data.speed = i;
 			ESP_LOGI(TAG, "[venting] send_data.speed = %d\n", send_data.speed);
 			xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
 			vTaskDelay(5000 / portTICK_RATE_MS);
 			ESP_LOGI(TAG, "[venting] i = [%d]\n", i);
 		}
-		*/
-		//vTaskDelay(1000 / portTICK_RATE_MS);
     }
 }
 
@@ -185,7 +196,6 @@ static void venting(void* arg)
 
 void app_main()
 {
-	
 	/*** triac control ***/
     gpio_config_t io_conf;
     io_conf.intr_type = GPIO_PIN_INTR_DISABLE; //disable interrupt
@@ -203,7 +213,6 @@ void app_main()
     io_conf.pull_up_en = 0; //enable pull-up mode
     io_conf.pull_down_en = 0; //disable pull-down_cw mode - отключитли подтяжку к земле
     gpio_config(&io_conf);
-	
 	/*********************/
 	
 	
@@ -216,8 +225,7 @@ void app_main()
 	ESP_ERROR_CHECK(err);
 	
 	
-	
-	gpio_evt_queue = xQueueCreate(5, sizeof(uint32_t));
+	vSemaphoreCreateBinary(xBinSemaphoreZS);
 	xQueueDIM = xQueueCreate(5, sizeof(fan_event_t));
 	
 	xStatus_venting = xTaskCreate(venting, "test_fan_work", 2048,  NULL, 5, NULL);
@@ -232,14 +240,9 @@ void app_main()
 		ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is created");
 	else
 		ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is not created");
-	
-	
-	
+
 	//xTaskCreate(terminator, "task terminator", 1024,  NULL, 9, NULL);
-	
-	
-	
-	
+
 }
 
 
@@ -250,23 +253,16 @@ void app_main()
 static void delay_timer_callback(void* arg)
 {
     //int64_t time_since_boot = esp_timer_get_time();
-    //ESP_LOGI(TAG, "[delay_timer_callback] One-shot timer called, time since boot: %lld us", time_since_boot);
     esp_timer_handle_t startingTRIAC_timer_handle = (esp_timer_handle_t) arg;
 	gpio_set_level(FAN, 1); //FAN switch on 
 	//ESP_LOGI(TAG, "[task_isr_handler_ZS] Fan on half");
     /* To start the timer which is running, need to stop it first */
-    //ESP_ERROR_CHECK(esp_timer_stop(startingTRIAC_timer_handle));
-    ESP_ERROR_CHECK(esp_timer_start_once(startingTRIAC_timer_handle, 100));
-    //time_since_boot = esp_timer_get_time();
+    ESP_ERROR_CHECK(esp_timer_start_once(startingTRIAC_timer_handle, 50));
     //ESP_LOGI(TAG, "[delay_timer_callback] startingTRIAC_timer start once");
-	
 }
 
 
 static void startingTRIAC_timer_callback(void* arg)
 {
 	gpio_set_level(FAN, 0); //FAN switch off
-	//ESP_LOGI(TAG, "[task_isr_handler_ZS] FAN OFF half");
-    //int64_t time_since_boot = esp_timer_get_time();
-    //ESP_LOGI(TAG, "[startingTRIAC_timer_callback] startingTRIAC_timer called, time since boot: %lld us", time_since_boot);
 }
