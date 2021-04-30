@@ -13,7 +13,7 @@
 #include <unistd.h>
 #include "esp_timer.h"
 
-
+#include "DHT.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -123,7 +123,7 @@ static void  task_isr_handler_ZS(void* arg)
     ESP_ERROR_CHECK(esp_timer_create(&delay_timer_args, &delay_timer));
 	
 	
-	uint32_t io_num;
+//	uint32_t io_num;
 	fan_event_t received_data;
 	uint8_t speed = 0;
 	ESP_LOGI(TAG, "[task_isr_handler_ZS]esp_timer is configured");
@@ -185,12 +185,12 @@ void DHT_task(void *pvParameter)
 		
         ESP_LOGI(TAG_dht, "Hum: %.1f Tmp: %.1f", H, T);
 		
-		if(H <= target_humidity - delta){
+		if(H >= target_humidity - delta){
 			ESP_LOGI(TAG_dht, "[DHT_task] Fan speed = 1");
 			send_data.speed = 1;
 			xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
 		}
-		else if(H > target_humidity + delta){
+		else if(H < target_humidity + delta){
 			ESP_LOGI(TAG_dht, "[DHT_task] Fan speed = 0");
 			send_data.speed = 0;
 			xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
