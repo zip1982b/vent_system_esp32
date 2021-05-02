@@ -45,6 +45,7 @@ static void delay_timer_callback(void* arg);
 static const char* TAG = "VentSys";
 static const char* TAG_dht = "DHT22";
 
+static const char* TAG_reg = "Regulator";
 
 
 #define FAN				32
@@ -64,6 +65,8 @@ typedef struct {
 } fan_event_t;
 
 
+
+
 portBASE_TYPE xStatus_venting;
 portBASE_TYPE xStatus_task_isr_handler_ZS;
 
@@ -73,6 +76,8 @@ xTaskHandle xZS_Handle;
 
 //static xQueueHandle gpio_evt_queue = NULL;
 xQueueHandle xQueueDIM;
+xQueueHandle xQueueHumi;
+
 xSemaphoreHandle xBinSemaphoreZS;
 
 
@@ -110,7 +115,6 @@ static void  task_isr_handler_ZS(void* arg)
     };
     esp_timer_handle_t startingTRIAC_timer;
     ESP_ERROR_CHECK(esp_timer_create(&startingTRIAC_timer_args, &startingTRIAC_timer));
-	
 	
 	
 	/* Create a one-shot timer for delay RMS */
@@ -164,14 +168,10 @@ static void  task_isr_handler_ZS(void* arg)
 
 void DHT_task(void *pvParameter)
 {
-	fan_event_t send_data;
     setDHTgpio(GPIO_NUM_33);
     ESP_LOGI(TAG_dht, "Starting DHT Task\n\n");
-	float H;
-	float T;
-	float target_humidity = 30.2;// %
-	uint8_t delta = 2;
-	
+    float H;
+    float T;
 	
     while (1)
     {
@@ -180,27 +180,54 @@ void DHT_task(void *pvParameter)
 
         errorHandler(ret);
 		
-		H = getHumidity();
-		T = getTemperature();
+	H = getHumidity();
+	T = getTemperature();
+	ESP_LOGI(TAG_dht, "Hum: %.1f Tmp: %.1f", H, T);	
 		
-        ESP_LOGI(TAG_dht, "Hum: %.1f Tmp: %.1f", H, T);
-		
-		if(H >= target_humidity - delta){
-			ESP_LOGI(TAG_dht, "[DHT_task] Fan speed = 1");
-			send_data.speed = 1;
-			xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
-		}
-		else if(H < target_humidity + delta){
-			ESP_LOGI(TAG_dht, "[DHT_task] Fan speed = 0");
-			send_data.speed = 0;
-			xQueueSendToBack(xQueueDIM, &send_data, portMAX_DELAY);
-		}
+  	xQueueSendToBack(xQueueHumi, &H, 50 / portTICK_RATE_MS); //send H to regulator
+	//send temp and humi to mqtt
+	
         // -- wait at least 2 sec before reading again ------------
         // The interval of whole process must be beyond 2 seconds !!
         vTaskDelay(3000 / portTICK_RATE_MS);
     }
 }
 
+
+
+
+
+
+void Regulator_task(void *pvParameter)
+{
+
+    float target_humidity = 45.2;// %
+    ESP_LOGI(TAG_dht, "Starting DHT Task\n\n");
+    float H = 0.0;
+    uint8_t delta = 2;//default delta
+    uint8_t speed = 2;//default speed
+    
+	while(1){
+
+    //receive speed from MQTT
+		xQueueReceive(xQueueHumi, &H, 0);
+		
+		ESP_LOGI(TAG_reg, "[Regulator task]Recivied humidity = %f", H);
+
+		if(H > target_humidity + delta){
+			ESP_LOGI(TAG_reg, "[Regulator_task] Fan speed = %d", speed);
+  			xQueueSendToBack(xQueueDIM, &speed, portMAX_DELAY);
+                }
+   		else if(H < target_humidity - delta){
+                         ESP_LOGI(TAG_reg, "[Regulator_task] Fan speed = 0");
+			 speed = 0;
+                         xQueueSendToBack(xQueueDIM, &speed, portMAX_DELAY);
+                }
+
+
+	        vTaskDelay(3000 / portTICK_RATE_MS);
+	}
+}
 
 
 
@@ -227,32 +254,27 @@ void app_main()
 	
 	
 	
-	esp_err_t err;
-	//install gpio isr service
+    esp_err_t err;
+    //install gpio isr service
     err = gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);//  
     //hook isr handler for specific gpio pin
     gpio_isr_handler_add(ZERO_SENSOR, gpio_isr_handler, (void*) ZERO_SENSOR);
-	ESP_ERROR_CHECK(err);
+    ESP_ERROR_CHECK(err);
 	
 	
-	vSemaphoreCreateBinary(xBinSemaphoreZS);
-	xQueueDIM = xQueueCreate(5, sizeof(fan_event_t));
-	
-	/*
-	xStatus_venting = xTaskCreate(venting, "test_fan_work", 2048,  NULL, 5, NULL);
-	if(xStatus_venting == pdPASS)
-		ESP_LOGI(TAG, "[app_main] Task [test_fan_work] is created");
-	else
-		ESP_LOGI(TAG, "[app_main] Task [test_fan_work] is not created");
-	*/
+    vSemaphoreCreateBinary(xBinSemaphoreZS);
+    xQueueDIM = xQueueCreate(5, sizeof(fan_event_t));
+    xQueueHumi = xQueueCreate(5, sizeof(float));
+
+
 	
 	
 	
-	xStatus_task_isr_handler_ZS = xTaskCreate(task_isr_handler_ZS, "task isr handler Zero Sensor", 1024 * 4,  NULL, 8, NULL); //&xZS_Handle
-	if(xStatus_task_isr_handler_ZS == pdPASS)
-		ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is created");
-	else
-		ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is not created");
+    xStatus_task_isr_handler_ZS = xTaskCreate(task_isr_handler_ZS, "task isr handler Zero Sensor", 1024 * 4,  NULL, 8, NULL); //&xZS_Handle
+    if(xStatus_task_isr_handler_ZS == pdPASS)
+	ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is created");
+    else
+	ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is not created");
 
 	
 	 //Initialize NVS
@@ -267,6 +289,8 @@ void app_main()
     //esp_log_level_set("*", ESP_LOG_INFO);
 
     xTaskCreate(&DHT_task, "DHT_task", 2048, NULL, 5, NULL);
+    xTaskCreate(&Regulator_task, "Regulator Humi", 2048, NULL, 5, NULL);
+
 }
 
 
