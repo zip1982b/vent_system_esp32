@@ -86,6 +86,12 @@ typedef struct {
 } fan_event_t;
 
 
+typedef struct {
+	float H;
+	float T;
+} dht_data_t;
+
+
 
 
 portBASE_TYPE xStatus_venting;
@@ -98,6 +104,7 @@ xTaskHandle xZS_Handle;
 //static xQueueHandle gpio_evt_queue = NULL;
 xQueueHandle xQueueDIM;
 xQueueHandle xQueueHumi;
+xQueueHandle xQueueDHTdata;
 
 xSemaphoreHandle xBinSemaphoreZS;
 
@@ -108,7 +115,7 @@ xSemaphoreHandle xBinSemaphoreZS;
 	static portBASE_TYPE xHigherPriorityTaskWoken;
 	xHigherPriorityTaskWoken = pdFALSE;
 	if(gpio_num == ZERO_SENSOR){
-		xSemaphoreGiveFromISR(xBinSemaphoreZS, &xHigherPriorityTaskWoken);
+	xSemaphoreGiveFromISR(xBinSemaphoreZS, &xHigherPriorityTaskWoken);
 		if(xHigherPriorityTaskWoken)
 		{
 			portYIELD_FROM_ISR();
@@ -259,10 +266,12 @@ void DHT_task(void *pvParameter)
     ESP_LOGI(TAG_dht, "Starting DHT Task\n\n");
     float H;
     float T;
+    dht_data dht22;
+    
 	
     while (1)
     {
-        //ESP_LOGI(TAG_dht, "=== Reading DHT ===\n");
+        ESP_LOGI(TAG_dht, "=== Reading DHT ===\n");
         int ret = readDHT();
 
         errorHandler(ret);
@@ -270,12 +279,10 @@ void DHT_task(void *pvParameter)
 	H = getHumidity();
 	T = getTemperature();
 	ESP_LOGI(TAG_dht, "Hum: %.1f Tmp: %.1f", H, T);	
-		
-  	xQueueSendToBack(xQueueHumi, &H, 50 / portTICK_RATE_MS); //send H to regulator
-	//send temp and humi to mqtt
-	
-        // -- wait at least 2 sec before reading again ------------
-        // The interval of whole process must be beyond 2 seconds !!
+	dht22.H = H;
+	dht22.T = T;	
+  	xQueueSendToBack(xQueueHumi, &H, 100 / portTICK_RATE_MS); //send H to regulator
+  	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send H and T to regulator
         vTaskDelay(3000 / portTICK_RATE_MS);
     }
 }
@@ -298,8 +305,13 @@ void Regulator_task(void *pvParameter)
     
 while(1){
 
-    //receive speed from MQTT
 		xQueueReceive(xQueueHumi, &H, 0);
+		
+		xQueueReceive(xQueueSpeed, &speed, 0);
+		
+		xQueueReceive(xQueueHumi, &target_humidity, 0);
+
+
 		
 		ESP_LOGI(TAG_reg, "[Regulator task]Recivied humidity = %f", H);
 
@@ -330,7 +342,8 @@ void MQTT_pub(void *pvParameter)
 	
 	while(1){
 
-	}	
+	}
+
 
 
 
@@ -391,7 +404,7 @@ void app_main()
     vSemaphoreCreateBinary(xBinSemaphoreZS);
     xQueueDIM = xQueueCreate(5, sizeof(fan_event_t));
     xQueueHumi = xQueueCreate(5, sizeof(float));
-
+    xQueueDHTdata = xQueueCreate(5, suzeof(dht_data_t));
 
 	
 	
