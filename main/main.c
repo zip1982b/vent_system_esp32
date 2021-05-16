@@ -65,7 +65,6 @@ static void delay_timer_callback(void* arg);
  */
  
 static const char* TAG = "VentSys";
-static const char* TAG_dht = "DHT22";
 
 static const char* TAG_reg = "Regulator";
 
@@ -108,9 +107,10 @@ xTaskHandle xZS_Handle;
 
 //static xQueueHandle gpio_evt_queue = NULL;
 xQueueHandle xQueueDIM;
-xQueueHandle xQueueHumi;
 xQueueHandle xQueueDHTdata;
-
+xQueueHandle xQueueTargetHumi;
+xQueueHandle xQueueMode;
+xQueueHandle xQueueSpeed;
 xSemaphoreHandle xBinSemaphoreZS;
 
 
@@ -265,32 +265,6 @@ static void  task_isr_handler_ZS(void* arg)
 
 
 
-void DHT_task(void *pvParameter)
-{
-    setDHTgpio(GPIO_NUM_33);
-    ESP_LOGI(TAG_dht, "Starting DHT Task\n\n");
-    float H;
-    float T;
-    dht_data dht22;
-    
-	
-    while (1)
-    {
-        ESP_LOGI(TAG_dht, "=== Reading DHT ===\n");
-        int ret = readDHT();
-
-        errorHandler(ret);
-		
-	H = getHumidity();
-	T = getTemperature();
-	ESP_LOGI(TAG_dht, "Hum: %.1f Tmp: %.1f", H, T);	
-	dht22.H = H;
-	dht22.T = T;	
-  	xQueueSendToBack(xQueueHumi, &H, 100 / portTICK_RATE_MS); //send H to regulator
-  	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send H and T to regulator
-        vTaskDelay(3000 / portTICK_RATE_MS);
-    }
-}
 
 
 
@@ -299,29 +273,38 @@ void DHT_task(void *pvParameter)
 
 void Regulator_task(void *pvParameter)
 {
+	
+    ESP_LOGI(TAG_reg, "Starting Regulator Task\n\n"); 
     enum Mode Reg_mode;
     Reg_mode = avto;
 
+    setDHTgpio(GPIO_NUM_33);
+    float H;
+    float T;
+    dht_data dht22;
+    int ret;
+    
+    
     float target_humidity = 45.2;// %
-    ESP_LOGI(TAG_dht, "Starting DHT Task\n\n"); 
     float H = 0.0;
     uint8_t delta = 2;//default delta
     uint8_t speed = 2;//default speed
 
-
-    
 while(1){
-
-		xQueueReceive(xQueueHumi, &H, 0);
-		
-		xQueueReceive(xQueueSpeed, &speed, 0);
-		
-		xQueueReceive(xQueueHumi, &target_humidity, 0);
+        ESP_LOGI(TAG_reg, "=== Reading DHT ===\n");
+	ret = readDHT();
+	errorHandler(ret);
+	H = getHumidity();
+	T = getTemperature();
+	ESP_LOGI(TAG_dht, "Hum: %.1f Tmp: %.1f", H, T);
+	dht22.H = H;
+	dht22.T = T;
+  	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send H and T to MQTT_pub
+	xQueueReceive(xQueueSpeed, &speed, 0);
+	xQueueReceive(xQueueTargetHumi, &target_humidity, 0);
+	xQueueReceive(xQueueMode, &Reg_mode, 0);
 
     if(Reg_mode){
-		
-		ESP_LOGI(TAG_reg, "[Regulator task]Recivied humidity = %f", H);
-
 		if(H > target_humidity + delta){
 			ESP_LOGI(TAG_reg, "[Regulator_task] Fan speed = %d", speed);
   			xQueueSendToBack(xQueueDIM, &speed, portMAX_DELAY);
@@ -331,7 +314,6 @@ while(1){
 			 speed = 0;
                          xQueueSendToBack(xQueueDIM, &speed, portMAX_DELAY);
                 }
-
     }
     else{
 	    xQueueSendToBack(xQueueDIM, &speed, portMAX_DELAY);
@@ -340,8 +322,20 @@ while(1){
 }
 }
 
+
+
+
+
+
+
+
+
+
+
 void MQTT_pub(void *pvParameter)
 {
+	portBASE_TYPE xStatus;
+    dht_data dht22;
 	esp_mqtt_client_config_t mqtt_cfg = {
 		.uri = CONFIG_BROKER_URL,
 	};
@@ -350,13 +344,11 @@ void MQTT_pub(void *pvParameter)
 	esp_mqtt_client_start(client);
 	
 	while(1){
-
+	    xStatus = xQueueReceive(xQueueDHTdata, &dht22, portMAX_DELAY);
+	    if(xStatus == pdPASS){
+	        esp_mqtt_client_publish(client, "", "", 0, 0, 0);    
+	    }
 	}
-
-
-
-
-
 } 
 
 
@@ -412,9 +404,10 @@ void app_main()
 	
     vSemaphoreCreateBinary(xBinSemaphoreZS);
     xQueueDIM = xQueueCreate(5, sizeof(fan_event_t));
-    xQueueHumi = xQueueCreate(5, sizeof(float));
     xQueueDHTdata = xQueueCreate(5, suzeof(dht_data_t));
-
+    xQueueMode = xQueueCreate(5, sizeof(Mode));
+    xQueueSpeed = xQueueCreate(5, sizeof(uint8_t));
+    xQueueTargetHumi = xQueueCreate(5, suzeof(float));
 	
 	
 	
@@ -436,7 +429,6 @@ void app_main()
 
     //esp_log_level_set("*", ESP_LOG_INFO);
 
-    xTaskCreate(&DHT_task, "DHT_task", 2048, NULL, 5, NULL);
     xTaskCreate(&Regulator_task, "Regulator Humi", 2048, NULL, 5, NULL);
 
     xTaskCreate(&MQTT_pub, "MQTT publish task", 2048, NULL, 5, NULL);
