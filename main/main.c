@@ -42,6 +42,11 @@
 #include "DHT.h"
 
 
+enum Mode {
+	hand,
+	avto
+};
+
 
 
 
@@ -294,6 +299,8 @@ void DHT_task(void *pvParameter)
 
 void Regulator_task(void *pvParameter)
 {
+    enum Mode Reg_mode;
+    Reg_mode = avto;
 
     float target_humidity = 45.2;// %
     ESP_LOGI(TAG_dht, "Starting DHT Task\n\n"); 
@@ -311,7 +318,7 @@ while(1){
 		
 		xQueueReceive(xQueueHumi, &target_humidity, 0);
 
-
+    if(Reg_mode){
 		
 		ESP_LOGI(TAG_reg, "[Regulator task]Recivied humidity = %f", H);
 
@@ -325,11 +332,13 @@ while(1){
                          xQueueSendToBack(xQueueDIM, &speed, portMAX_DELAY);
                 }
 
-
-	        vTaskDelay(3000 / portTICK_RATE_MS);
-	}
+    }
+    else{
+	    xQueueSendToBack(xQueueDIM, &speed, portMAX_DELAY);
+    }
+    vTaskDelay(3000 / portTICK_RATE_MS);
 }
-
+}
 
 void MQTT_pub(void *pvParameter)
 {
