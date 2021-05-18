@@ -70,6 +70,18 @@ static const char* TAG_reg = "Regulator";
 
 static const char* TAG_mqtt = "MQTT";
 
+const char topic_DHT22_dataH[] = "/home/bathroom/humi/value";
+const char topic_DHT22_dataT[] = "/home/bathroom/temp/value";
+
+const char topic_regulator_vent_speed[] = "/home/bathroom/reg/speed/set";
+const char topic_regulator_target_humi[] = "/home/bathroom/reg/target_humi/set";
+const char topic_regulator_mode[] = "/home/bathroom/reg/mode/set";
+
+
+
+
+
+
 
 
 
@@ -146,6 +158,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     switch((esp_mqtt_event_id_t)event_id){
 	    case MQTT_EVENT_CONNECTED:
 		    ESP_LOGI(TAG_mqtt, "MQTT_EVENT_CONNECTED");
+		    esp_mqtt_client_subscribe(client, topic_regulator_vent_speed, 0);
+		    esp_mqtt_client_subscribe(client, topic_regulator_target_humi, 0);
+		    esp_mqtt_client_subscribe(client, topic_regulator_mode, 0);
 		    break;
 	    case MQTT_EVENT_DISCONNECTED:
 		    ESP_LOGI(TAG_mqtt, "MQTT_EVENT_DISCONNECTED");
@@ -334,8 +349,10 @@ while(1){
 
 void MQTT_pub(void *pvParameter)
 {
+	char buf_H[5];
+	char buf_T[5];
 	portBASE_TYPE xStatus;
-    dht_data dht22;
+        dht_data_t dht22;
 	esp_mqtt_client_config_t mqtt_cfg = {
 		.uri = CONFIG_BROKER_URL,
 	};
@@ -346,7 +363,10 @@ void MQTT_pub(void *pvParameter)
 	while(1){
 	    xStatus = xQueueReceive(xQueueDHTdata, &dht22, portMAX_DELAY);
 	    if(xStatus == pdPASS){
-	        esp_mqtt_client_publish(client, "", "", 0, 0, 0);    
+		sprintf(buf_H, "%f", dht22.H);
+		sprintf(buf_T, "%f", dht22.T);
+	        esp_mqtt_client_publish(client, topic_DHT22_dataH, buf_H, 0, 0, 0);   
+	        esp_mqtt_client_publish(client, topic_DHT22_dataT, buf_T, 0, 0, 0);    
 	    }
 	}
 } 
