@@ -152,6 +152,25 @@ static void log_error_if_nonzero(const char *message, int error_code)
 
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data){
+	char speed[2];
+	char *vent_speed;
+	vent_speed = &speed[0];
+	uint8_t set_speed;
+
+	char humi[5];
+	char *target_humi;
+	target_humi = &humi[0];
+	float target_humidity;
+
+	char mode[1];
+	char *reg_mode;
+	reg_mode = &mode[0];
+	uint8_t mode_regulator;
+
+
+
+
+
     ESP_LOGD(TAG_mqtt, "event dispatched from event loop base=%s, event_id=%d", base, event_id);
     esp_mqtt_event_handle_t event = event_data;
     esp_mqtt_client_handle_t client = event->client;
@@ -178,6 +197,25 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 		    ESP_LOGI(TAG_mqtt, "MQTT_EVENT_DATA");
 		    printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
 		    printf("DATA=%.*s\r\n", event->data_len, event->data);
+		    if(strncmp(topic_regulator_vent_speed, event->topic, event->topic_len)==0){
+			    ESP_LOGI(TAG_mqtt, "received vent speed set");
+			    strncpy(vent_speed, event->data, event->data_len);
+			    set_speed = atoi(vent_speed);
+			    xQueueSendToBack(xQueueSpeed, &set_speed, 100/portTICK_RATE_MS);
+		    }
+		    else if(strncmp(topic_regulator_target_humi, event->topic, event->topic_len)==0){
+			    ESP_LOGI(TAG_mqtt, "received target humidity");
+			    strncpy(target_humi, event->data, event->data_len);
+			    target_humidity = atoi(target_humi);
+			    xQueueSendToBack(xQueueTargetHumi, &target_humidity, 100/portTICK_RATE_MS);
+		    }
+		    else if(strncmp(topic_regulator_mode, event->topic, event->topic_len)==0){
+			    ESP_LOGI(TAG_mqtt, "received mode");
+			    strncpy(reg_mode, event->data, event->data_len);
+			    mode_regulator = atoi(reg_mode);
+			    xQueueSendToBack(xQueueMode, &mode_regulator, 100/portTICK_RATE_MS);
+		    }
+		    else ESP_LOGI(TAG_mqtt, "topic strings not equal");
                     break;
 	    case MQTT_EVENT_ERROR:
 		    ESP_LOGI(TAG_mqtt, "MQTT_EVENT_ERROR");
