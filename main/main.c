@@ -18,16 +18,12 @@
 #include "nvs_flash.h"
 
 #include "esp_event.h"
-
-
 #include "esp_netif.h"
-
-#include "esp_protocol_examples_common.h"
+#include "protocol_examples_common.h"
 
 #include <unistd.h>
 #include "esp_timer.h"
 
-#include "DHT.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -332,14 +328,13 @@ void Regulator_task(void *pvParameter)
     Reg_mode = avto;
 
     setDHTgpio(GPIO_NUM_33);
-    float H;
+    float H = 0.0;
     float T;
-    dht_data dht22;
+    dht_data_t dht22;
     int ret;
     
     
     float target_humidity = 45.2;// %
-    float H = 0.0;
     uint8_t delta = 2;//default delta
     uint8_t speed = 2;//default speed
 
@@ -349,7 +344,7 @@ while(1){
 	errorHandler(ret);
 	H = getHumidity();
 	T = getTemperature();
-	ESP_LOGI(TAG_dht, "Hum: %.1f Tmp: %.1f", H, T);
+	ESP_LOGI(TAG_reg, "Hum: %.1f Tmp: %.1f", H, T);
 	dht22.H = H;
 	dht22.T = T;
   	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send H and T to MQTT_pub
@@ -401,8 +396,8 @@ void MQTT_pub(void *pvParameter)
 	while(1){
 	    xStatus = xQueueReceive(xQueueDHTdata, &dht22, portMAX_DELAY);
 	    if(xStatus == pdPASS){
-		sprintf(buf_H, "%f", dht22.H);
-		sprintf(buf_T, "%f", dht22.T);
+		sprintf(buf_H, "%1.1f", dht22.H);
+		sprintf(buf_T, "%1.1f", dht22.T);
 	        esp_mqtt_client_publish(client, topic_DHT22_dataH, buf_H, 0, 0, 0);   
 	        esp_mqtt_client_publish(client, topic_DHT22_dataT, buf_T, 0, 0, 0);    
 	    }
@@ -462,10 +457,10 @@ void app_main()
 	
     vSemaphoreCreateBinary(xBinSemaphoreZS);
     xQueueDIM = xQueueCreate(5, sizeof(fan_event_t));
-    xQueueDHTdata = xQueueCreate(5, suzeof(dht_data_t));
-    xQueueMode = xQueueCreate(5, sizeof(Mode));
+    xQueueDHTdata = xQueueCreate(5, sizeof(dht_data_t));
+    xQueueMode = xQueueCreate(5, sizeof(uint8_t));
     xQueueSpeed = xQueueCreate(5, sizeof(uint8_t));
-    xQueueTargetHumi = xQueueCreate(5, suzeof(float));
+    xQueueTargetHumi = xQueueCreate(5, sizeof(float));
 	
 	
 	
@@ -491,6 +486,11 @@ void app_main()
 
     xTaskCreate(&MQTT_pub, "MQTT publish task", 2048, NULL, 5, NULL);
 
+
+
+
+    ESP_ERROR_CHECK(nvs_flash_init());
+    ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(example_connect());
 
 
