@@ -426,10 +426,12 @@ static void  task_isr_handler_ZS(void* arg)
 		
 		//ESP_LOGI(TAG, "[task_isr_handler_ZS] speed = %d", speed);
 		switch(speed){
+		
 		case 0:
 			gpio_set_level(FAN, 0); //FAN switch off
 			//ESP_LOGI(TAG, "[task_isr_handler_ZS] Fan off");
 			break;
+		
 		case 1:
 			/* Start the one-shot timer */
 			esp_timer_start_once(delay_timer, 5000);
@@ -471,7 +473,8 @@ void Regulator_task(void *pvParameter)
     
     float target_humidity = 15.2;// %
     uint8_t delta = 2;//default delta
-    uint8_t speed = 2;//default speed
+    uint8_t Speed = 2;//default speed
+    uint8_t sp = 0;
 
 while(1){
         ESP_LOGI(TAG_reg, "=== Reading DHT ===\n");
@@ -483,25 +486,25 @@ while(1){
 	dht22.H = H;
 	dht22.T = T;
   	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send H and T to MQTT_pub
-	xQueueReceive(xQueueSpeed, &speed, 0);
+	xQueueReceive(xQueueSpeed, &Speed, 100 / portTICK_RATE_MS);
 	xQueueReceive(xQueueTargetHumi, &target_humidity, 0);
-	xQueueReceive(xQueueMode, &Reg_mode, 0);
+	xQueueReceive(xQueueMode, &Reg_mode, 0);//regulator mode ()
 
     if(Reg_mode){
-		if(H > target_humidity + delta){
-			ESP_LOGI(TAG_reg, "[Regulator_task] Fan speed = %d", speed);
-  			xQueueSendToBack(xQueueDIM, &speed, portMAX_DELAY);
+		if(H > (target_humidity + delta)){
+			/* need low humidity */
+			ESP_LOGI(TAG_reg, "[Regulator_task] Fan ON, speed = %d", Speed);
+  			xQueueSendToBack(xQueueDIM, &Speed, portMAX_DELAY);
                 }
-   		else if(H < target_humidity - delta){
-                         ESP_LOGI(TAG_reg, "[Regulator_task] Fan speed = 0");
-			 speed = 0;
-                         xQueueSendToBack(xQueueDIM, &speed, portMAX_DELAY);
+   		else if(H < (target_humidity - delta)){
+                         ESP_LOGI(TAG_reg, "[Regulator_task] Fan OFF, speed = 0");
+                         xQueueSendToBack(xQueueDIM, &sp, portMAX_DELAY);
                 }
     }
     else{
-	    xQueueSendToBack(xQueueDIM, &speed, portMAX_DELAY);
+	    xQueueSendToBack(xQueueDIM, &Speed, portMAX_DELAY);
     }
-    vTaskDelay(3000 / portTICK_RATE_MS);
+    vTaskDelay(5000 / portTICK_RATE_MS);
 }
 }
 
