@@ -469,7 +469,7 @@ void Regulator_task(void *pvParameter)
     int ret;
     
     
-    float target_humidity = 45.2;// %
+    float target_humidity = 15.2;// %
     uint8_t delta = 2;//default delta
     uint8_t speed = 2;//default speed
 

@@ -129,7 +129,7 @@ CONFIG_PARTITION_TABLE_MD5=y
 # My project Configuration
 #
 CONFIG_ESP_WIFI_SSID="ASUS_E0"
-CONFIG_ESP_WIFI_PASSWORD="mypass"
+CONFIG_ESP_WIFI_PASSWORD="sc9or9pion"
 CONFIG_ESP_MAXIMUM_RETRY=5
 CONFIG_BROKER_URL="mqtt://mqtt.eclipseprojects.io"
 # end of My project Configuration
