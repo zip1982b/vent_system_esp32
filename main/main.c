@@ -99,8 +99,9 @@ const char topic_regulator_mode[] = "/home/bathroom/reg/mode/set";
 
 
 
-
-
+const char topic_regulator_vent_speed_v[] = "/home/bathroom/reg/speed/value";
+const char topic_regulator_target_humi_v[] = "/home/bathroom/reg/target_humi/value";
+const char topic_regulator_mode_v[] = "/home/bathroom/reg/mode/value";
 
 
 
@@ -140,6 +141,12 @@ xTaskHandle xZS_Handle;
 //static xQueueHandle gpio_evt_queue = NULL;
 xQueueHandle xQueueDIM;
 xQueueHandle xQueueDHTdata;
+
+xQueueHandle xQueueSpeeddata;
+xQueueHandle xQueueModedata;
+xQueueHandle xQueueTargetHumidata;
+
+
 xQueueHandle xQueueTargetHumi;
 xQueueHandle xQueueMode;
 xQueueHandle xQueueSpeed;
@@ -295,10 +302,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 	char *reg_mode;
 	reg_mode = &mode[0];
 	uint8_t mode_regulator;
-
-
-
-
 
     ESP_LOGD(TAG_mqtt, "event dispatched from event loop base=%s, event_id=%d", base, event_id);
     esp_mqtt_event_handle_t event = event_data;
@@ -485,10 +488,15 @@ while(1){
 	ESP_LOGI(TAG_reg, "Hum: %.1f Tmp: %.1f", H, T);
 	dht22.H = H;
 	dht22.T = T;
-  	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send H and T to MQTT_pub
 	xQueueReceive(xQueueSpeed, &Speed, 100 / portTICK_RATE_MS);
 	xQueueReceive(xQueueTargetHumi, &target_humidity, 0);
-	xQueueReceive(xQueueMode, &Reg_mode, 0);//regulator mode ()
+	xQueueReceive(xQueueMode, &Reg_mode, 0);//regulator mode (auto, hand)
+
+  	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send H and T to MQTT_pub
+  	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send Seed to MQTT_pub
+  	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send Terget Humi to MQTT_pub
+  	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send Mode to MQTT_pub
+
 
     if(Reg_mode){
 		if(H > (target_humidity + delta)){
