@@ -75,21 +75,13 @@ static int s_retry_num = 0;
 
 
 
-/**
- * Brief:
- * 
- * GPIO status:
- * GPIO32: output
- * GPIO34:  input, interrupt from rising edge and falling edge
- * 
- */
- 
+/* tags */
 static const char* TAG = "VentSys";
 static const char* TAG_reg = "Regulator";
 static const char* TAG_mqtt = "MQTT";
 static const char* TAG_wifi = "wifi station";
 
-
+/* topics for mqtt */
 const char topic_DHT22_dataH[] = "/home/bathroom/humi/value";
 const char topic_DHT22_dataT[] = "/home/bathroom/temp/value";
 
@@ -97,13 +89,17 @@ const char topic_regulator_vent_speed[] = "/home/bathroom/reg/speed/set";
 const char topic_regulator_target_humi[] = "/home/bathroom/reg/target_humi/set";
 const char topic_regulator_mode[] = "/home/bathroom/reg/mode/set";
 
-
-
 const char topic_regulator_vent_speed_v[] = "/home/bathroom/reg/speed/value";
 const char topic_regulator_target_humi_v[] = "/home/bathroom/reg/target_humi/value";
 const char topic_regulator_mode_v[] = "/home/bathroom/reg/mode/value";
 
-
+/* 
+ *
+ *GPIO STATUS:
+ *GPIO32 - output
+ *GPIO34 - input, interrupt from rising edge and falling edge
+ *
+ * */
 
 
 #define FAN				32
@@ -138,7 +134,6 @@ portBASE_TYPE xStatus_task_isr_handler_ZS;
 xTaskHandle xVenting_Handle;
 xTaskHandle xZS_Handle;
 
-//static xQueueHandle gpio_evt_queue = NULL;
 xQueueHandle xQueueDIM;
 xQueueHandle xQueueDHTdata;
 
@@ -417,34 +412,25 @@ static void  task_isr_handler_ZS(void* arg)
 	ESP_LOGI(TAG, "[task_isr_handler_ZS]esp_timer is configured");
 	
 	for(;;){
-		//ESP_LOGI(TAG, "[task_isr_handler_ZS] - Cicle -");
-		
 		xSemaphoreTake(xBinSemaphoreZS, portMAX_DELAY);
-		//xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY);
-			//ESP_LOGI(TAG, "[task_isr_handler_ZS] ionum = %d", io_num);
-		
 		
 		xQueueReceive(xQueueDIM, &received_data, 0);
 		speed = received_data.speed;
 		
 		//ESP_LOGI(TAG, "[task_isr_handler_ZS] speed = %d", speed);
 		switch(speed){
-		
 		case 0:
 			gpio_set_level(FAN, 0); //FAN switch off
-			//ESP_LOGI(TAG, "[task_isr_handler_ZS] Fan off");
 			break;
-		
 		case 1:
 			/* Start the one-shot timer */
 			esp_timer_start_once(delay_timer, 5000);
-			//ESP_LOGI(TAG, "[task_isr_handler_ZS] Started timer, time since boot: %lld us", esp_timer_get_time());
 			break;
 		case 2:
 			gpio_set_level(FAN, 1); //FAN switch on - 100% speed
-			//ESP_LOGI(TAG, "[task_isr_handler_ZS] FAN ON speed = 2");
 			break;
 		}
+  	xQueueSendToBack(xQueueSpeeddata, &speed, 100 / portTICK_RATE_MS); //send Seed to MQTT_pub
 	}
 }
 
@@ -457,12 +443,9 @@ static void  task_isr_handler_ZS(void* arg)
 
 
 
-
 void Regulator_task(void *pvParameter)
 {
-	
-    vTaskDelay(3000 / portTICK_RATE_MS);
-	
+    vTaskDelay(5000 / portTICK_RATE_MS);
     ESP_LOGI(TAG_reg, "Starting Regulator Task\n\n"); 
     enum Mode Reg_mode;
     Reg_mode = avto;
@@ -474,7 +457,7 @@ void Regulator_task(void *pvParameter)
     int ret;
     
     
-    float target_humidity = 15.2;// %
+    uint8_t target_humidity = 15;/* % */
     uint8_t delta = 2;//default delta
     uint8_t Speed = 2;//default speed
     uint8_t sp = 0;
@@ -483,35 +466,37 @@ while(1){
         ESP_LOGI(TAG_reg, "=== Reading DHT ===\n");
 	ret = readDHT();
 	errorHandler(ret);
-	H = getHumidity();
-	T = getTemperature();
-	ESP_LOGI(TAG_reg, "Hum: %.1f Tmp: %.1f", H, T);
-	dht22.H = H;
-	dht22.T = T;
-	xQueueReceive(xQueueSpeed, &Speed, 100 / portTICK_RATE_MS);
+	if (ret == 0){
+		H = getHumidity();
+		T = getTemperature();
+		ESP_LOGI(TAG_reg, "Hum: %.1f Tmp: %.1f", H, T);
+		dht22.H = H;
+		dht22.T = T;
+	}
+	xQueueReceive(xQueueSpeed, &Speed, 0);
 	xQueueReceive(xQueueTargetHumi, &target_humidity, 0);
 	xQueueReceive(xQueueMode, &Reg_mode, 0);//regulator mode (auto, hand)
 
   	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send H and T to MQTT_pub
-  	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send Seed to MQTT_pub
-  	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send Terget Humi to MQTT_pub
-  	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send Mode to MQTT_pub
 
 
     if(Reg_mode){
-		if(H > (target_humidity + delta)){
-			/* need low humidity */
-			ESP_LOGI(TAG_reg, "[Regulator_task] Fan ON, speed = %d", Speed);
-  			xQueueSendToBack(xQueueDIM, &Speed, portMAX_DELAY);
-                }
-   		else if(H < (target_humidity - delta)){
-                         ESP_LOGI(TAG_reg, "[Regulator_task] Fan OFF, speed = 0");
-                         xQueueSendToBack(xQueueDIM, &sp, portMAX_DELAY);
-                }
+	if(H > (target_humidity + delta)){
+	/* need low humidity */
+		ESP_LOGI(TAG_reg, "[Regulator_task] Fan ON, speed = %d", Speed);
+  		xQueueSendToBack(xQueueDIM, &Speed, portMAX_DELAY);
+        }
+   	else if(H < (target_humidity - delta)){
+                ESP_LOGI(TAG_reg, "[Regulator_task] Fan OFF, speed = 0");
+                xQueueSendToBack(xQueueDIM, &sp, portMAX_DELAY);
+        }
     }
     else{
 	    xQueueSendToBack(xQueueDIM, &Speed, portMAX_DELAY);
     }
+
+    xQueueSendToBack(xQueueTargetHumidata, &target_humidity, 100 / portTICK_RATE_MS); //send Terget Humi to MQTT_pub
+    xQueueSendToBack(xQueueModedata, &Reg_mode, 100 / portTICK_RATE_MS); //send Mode to MQTT_pub
     vTaskDelay(5000 / portTICK_RATE_MS);
 }
 }
@@ -531,7 +516,24 @@ void MQTT_pub(void *pvParameter)
 	char buf_H[5];
 	char buf_T[5];
 	portBASE_TYPE xStatus;
+
+	portBASE_TYPE xStatus1;
+	char buf_speed[5];
+	uint8_t speed = 0;
+
+
+	portBASE_TYPE xStatus2;
+	char buf_target_h[5];
+	uint8_t target_humi = 0;
+
+
+	portBASE_TYPE xStatus3;
+	char buf_mode[5];
+	uint8_t mode = 0;
+
+
         dht_data_t dht22;
+
 	esp_mqtt_client_config_t mqtt_cfg = {
 		.uri = CONFIG_BROKER_URL,
 	};
@@ -540,13 +542,34 @@ void MQTT_pub(void *pvParameter)
 	esp_mqtt_client_start(client);
 	
 	while(1){
-	    xStatus = xQueueReceive(xQueueDHTdata, &dht22, portMAX_DELAY);
+	    xStatus = xQueueReceive(xQueueDHTdata, &dht22, 0);
 	    if(xStatus == pdPASS){
 		sprintf(buf_H, "%1.1f", dht22.H);
 		sprintf(buf_T, "%1.1f", dht22.T);
 	        esp_mqtt_client_publish(client, topic_DHT22_dataH, buf_H, 0, 0, 0);   
 	        esp_mqtt_client_publish(client, topic_DHT22_dataT, buf_T, 0, 0, 0);    
 	    }
+
+	    xStatus1 = xQueueReceive(xQueueSpeeddata, &speed, 0);
+	    if(xStatus1 == pdPASS){
+		sprintf(buf_speed, "%d", speed);
+	        esp_mqtt_client_publish(client, topic_regulator_vent_speed_v, buf_speed, 0, 0, 0);   
+	    }
+
+	    xStatus2 = xQueueReceive(xQueueTargetHumidata, &target_humi, 0);
+	    if(xStatus2 == pdPASS){
+		sprintf(buf_target_h, "%d", target_humi);
+	        esp_mqtt_client_publish(client, topic_regulator_target_humi_v, buf_target_h, 0, 0, 0);   
+	    }
+
+
+	    xStatus3 = xQueueReceive(xQueueModedata, &mode, 0);
+	    if(xStatus3 == pdPASS){
+		sprintf(buf_mode, "%d", mode);
+	        esp_mqtt_client_publish(client, topic_regulator_mode_v, buf_mode, 0, 0, 0);   
+	    }
+
+//    	vTaskDelay(1000 / portTICK_RATE_MS);
 	}
 } 
 
@@ -608,8 +631,13 @@ void app_main()
     xQueueSpeed = xQueueCreate(5, sizeof(uint8_t));
     xQueueTargetHumi = xQueueCreate(5, sizeof(float));
 	
-	
-	
+    xQueueSpeeddata = xQueueCreate(5, sizeof(uint8_t));
+    xQueueModedata = xQueueCreate(5, sizeof(uint8_t));
+    xQueueTargetHumidata = xQueueCreate(5, sizeof(uint8_t));
+
+
+
+    
     xStatus_task_isr_handler_ZS = xTaskCreate(task_isr_handler_ZS, "task isr handler Zero Sensor", 1024 * 4,  NULL, 8, NULL); //&xZS_Handle
     if(xStatus_task_isr_handler_ZS == pdPASS)
 	ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is created");
@@ -625,21 +653,16 @@ void app_main()
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
-
+    ESP_ERROR_CHECK(esp_netif_init());
     //esp_log_level_set("*", ESP_LOG_INFO);
+    wifi_init_sta();
+    vTaskDelay(5000 / portTICK_RATE_MS);
 
-    xTaskCreate(&Regulator_task, "Regulator Humi", 2048, NULL, 5, NULL);
+
+    xTaskCreate(&Regulator_task, "Regulator Humi", 2048, NULL, 9, NULL);
 
     xTaskCreate(&MQTT_pub, "MQTT publish task", 3072, NULL, 5, NULL);
-
-
-
-
-    ESP_ERROR_CHECK(esp_netif_init());
-    wifi_init_sta();
-
 }
-
 
 
 
