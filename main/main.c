@@ -430,7 +430,7 @@ static void  task_isr_handler_ZS(void* arg)
 			gpio_set_level(FAN, 1); //FAN switch on - 100% speed
 			break;
 		}
-  	xQueueSendToBack(xQueueSpeeddata, &speed, 100 / portTICK_RATE_MS); //send Seed to MQTT_pub
+  	xQueueSendToBack(xQueueSpeeddata, &speed, 0); //send Seed to MQTT_pub
 	}
 }
 
@@ -495,8 +495,8 @@ while(1){
 	    xQueueSendToBack(xQueueDIM, &Speed, portMAX_DELAY);
     }
 
-    xQueueSendToBack(xQueueTargetHumidata, &target_humidity, 100 / portTICK_RATE_MS); //send Terget Humi to MQTT_pub
-    xQueueSendToBack(xQueueModedata, &Reg_mode, 100 / portTICK_RATE_MS); //send Mode to MQTT_pub
+    xQueueSendToBack(xQueueTargetHumidata, &target_humidity, 0); //send Terget Humi to MQTT_pub
+    xQueueSendToBack(xQueueModedata, &Reg_mode, 0); //send Mode to MQTT_pub
     vTaskDelay(5000 / portTICK_RATE_MS);
 }
 }
@@ -569,7 +569,7 @@ void MQTT_pub(void *pvParameter)
 	        esp_mqtt_client_publish(client, topic_regulator_mode_v, buf_mode, 0, 0, 0);   
 	    }
 
-//    	vTaskDelay(1000 / portTICK_RATE_MS);
+    	vTaskDelay(5000 / portTICK_RATE_MS);
 	}
 } 
 
