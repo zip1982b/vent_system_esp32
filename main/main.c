@@ -430,7 +430,7 @@ static void  task_isr_handler_ZS(void* arg)
 			gpio_set_level(FAN, 1); //FAN switch on - 100% speed
 			break;
 		}
-  	xQueueSendToBack(xQueueSpeeddata, &speed, 0); //send Seed to MQTT_pub
+  //	xQueueSendToBack(xQueueSpeeddata, &speed, 0); //send Seed to MQTT_pub
 	}
 }
 
@@ -477,14 +477,14 @@ while(1){
 	xQueueReceive(xQueueTargetHumi, &target_humidity, 0);
 	xQueueReceive(xQueueMode, &Reg_mode, 0);//regulator mode (auto, hand)
 
-  	xQueueSendToBack(xQueueDHTdata, &dht22, 100 / portTICK_RATE_MS); //send H and T to MQTT_pub
+  	xQueueSendToBack(xQueueDHTdata, &dht22, 0); //send H and T to MQTT_pub
 
 
     if(Reg_mode){
 	if(H > (target_humidity + delta)){
 	/* need low humidity */
 		ESP_LOGI(TAG_reg, "[Regulator_task] Fan ON, speed = %d", Speed);
-  		xQueueSendToBack(xQueueDIM, &Speed, portMAX_DELAY);
+  		xQueueSendToBack(xQueueDIM, &Speed, 0);
         }
    	else if(H < (target_humidity - delta)){
                 ESP_LOGI(TAG_reg, "[Regulator_task] Fan OFF, speed = 0");
@@ -495,8 +495,8 @@ while(1){
 	    xQueueSendToBack(xQueueDIM, &Speed, portMAX_DELAY);
     }
 
-    xQueueSendToBack(xQueueTargetHumidata, &target_humidity, 0); //send Terget Humi to MQTT_pub
-    xQueueSendToBack(xQueueModedata, &Reg_mode, 0); //send Mode to MQTT_pub
+   // xQueueSendToBack(xQueueTargetHumidata, &target_humidity, 0); //send Terget Humi to MQTT_pub
+   // xQueueSendToBack(xQueueModedata, &Reg_mode, 0); //send Mode to MQTT_pub
     vTaskDelay(5000 / portTICK_RATE_MS);
 }
 }
@@ -571,11 +571,7 @@ void MQTT_pub(void *pvParameter)
 
     	vTaskDelay(5000 / portTICK_RATE_MS);
 	}
-} 
-
-
-
-
+}
 
 
 
@@ -659,7 +655,7 @@ void app_main()
     vTaskDelay(5000 / portTICK_RATE_MS);
 
 
-    xTaskCreate(&Regulator_task, "Regulator Humi", 2048, NULL, 9, NULL);
+    xTaskCreate(&Regulator_task, "Regulator Humi", 2048, NULL, 5, NULL);
 
     xTaskCreate(&MQTT_pub, "MQTT publish task", 3072, NULL, 5, NULL);
 }
