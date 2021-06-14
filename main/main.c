@@ -148,19 +148,19 @@ xQueueHandle xQueueSpeed;
 xSemaphoreHandle xBinSemaphoreZS;
 
 
- static void IRAM_ATTR gpio_isr_handler(void* arg)
-{
-    uint32_t gpio_num = (uint32_t) arg;
-	static portBASE_TYPE xHigherPriorityTaskWoken;
-	xHigherPriorityTaskWoken = pdFALSE;
-	if(gpio_num == ZERO_SENSOR){
-	xSemaphoreGiveFromISR(xBinSemaphoreZS, &xHigherPriorityTaskWoken);
-		if(xHigherPriorityTaskWoken)
-		{
-			portYIELD_FROM_ISR();
-		}
-	}
-}
+// static void IRAM_ATTR gpio_isr_handler(void* arg)
+//{
+//    uint32_t gpio_num = (uint32_t) arg;
+//	static portBASE_TYPE xHigherPriorityTaskWoken;
+//	xHigherPriorityTaskWoken = pdFALSE;
+//	if(gpio_num == ZERO_SENSOR){
+//	xSemaphoreGiveFromISR(xBinSemaphoreZS, &xHigherPriorityTaskWoken);
+//		if(xHigherPriorityTaskWoken)
+//		{
+//			portYIELD_FROM_ISR();
+//		}
+//	}
+//}
 
 
 
@@ -291,7 +291,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 	char humi[5];
 	char *target_humi;
 	target_humi = &humi[0];
-	float target_humidity;
+	uint8_t target_humidity;
 
 	char mode[1];
 	char *reg_mode;
@@ -446,6 +446,8 @@ static void  task_isr_handler_ZS(void* arg)
 void Regulator_task(void *pvParameter)
 {
     vTaskDelay(5000 / portTICK_RATE_MS);
+
+    portBASE_TYPE xStatus;
     ESP_LOGI(TAG_reg, "Starting Regulator Task\n\n"); 
     enum Mode Reg_mode;
     Reg_mode = avto;
@@ -459,8 +461,8 @@ void Regulator_task(void *pvParameter)
     
     uint8_t target_humidity = 15;/* % */
     uint8_t delta = 2;//default delta
-    uint8_t Speed = 2;//default speed
-    uint8_t sp = 0;
+    uint8_t fan_on = 0;//default speed
+  //  uint8_t sp = 0;
 
 while(1){
         ESP_LOGI(TAG_reg, "=== Reading DHT ===\n");
@@ -473,30 +475,44 @@ while(1){
 		dht22.H = H;
 		dht22.T = T;
 	}
-	xQueueReceive(xQueueSpeed, &Speed, 0);
-	xQueueReceive(xQueueTargetHumi, &target_humidity, 0);
+	xQueueReceive(xQueueSpeed, &fan_on, 0);
+	xStatus = xQueueReceive(xQueueTargetHumi, &target_humidity, 0);
+	if(xStatus == pdPASS){
+		ESP_LOGI(TAG_reg, "[Regulator_task] target_humidity = %d", target_humidity);
+	}
 	xQueueReceive(xQueueMode, &Reg_mode, 0);//regulator mode (auto, hand)
 
   	xQueueSendToBack(xQueueDHTdata, &dht22, 0); //send H and T to MQTT_pub
 
 
     if(Reg_mode){
-	if(H > (target_humidity + delta)){
+	if(H >= (target_humidity + delta)){
 	/* need low humidity */
-		ESP_LOGI(TAG_reg, "[Regulator_task] Fan ON, speed = %d", Speed);
-  		xQueueSendToBack(xQueueDIM, &Speed, 0);
+		ESP_LOGI(TAG_reg, "[Regulator_task] Avto mode - Fan ON");
+		gpio_set_level(FAN, 1); //FAN switch on - 100% speed
+  		//xQueueSendToBack(xQueueDIM, &Speed, 0);
         }
    	else if(H < (target_humidity - delta)){
-                ESP_LOGI(TAG_reg, "[Regulator_task] Fan OFF, speed = 0");
-                xQueueSendToBack(xQueueDIM, &sp, portMAX_DELAY);
+	
+                ESP_LOGI(TAG_reg, "[Regulator_task] Avto mode - Fan OFF");
+               // xQueueSendToBack(xQueueDIM, &sp, portMAX_DELAY);
+		gpio_set_level(FAN, 0); //FAN switch off
         }
     }
     else{
-	    xQueueSendToBack(xQueueDIM, &Speed, portMAX_DELAY);
+	    if(fan_on){
+
+                ESP_LOGI(TAG_reg, "[Regulator_task] Hand mode  - Fan on");
+		gpio_set_level(FAN, 1); //FAN switch on - 100% speed
+	    }
+	    else {
+                ESP_LOGI(TAG_reg, "[Regulator_task] Hand mode  - Fan off");
+		gpio_set_level(FAN, 0); //FAN switch off
+	    }
     }
 
-   // xQueueSendToBack(xQueueTargetHumidata, &target_humidity, 0); //send Terget Humi to MQTT_pub
-   // xQueueSendToBack(xQueueModedata, &Reg_mode, 0); //send Mode to MQTT_pub
+    xQueueSendToBack(xQueueTargetHumidata, &target_humidity, 0); //send Terget Humi to MQTT_pub
+    xQueueSendToBack(xQueueModedata, &Reg_mode, 0); //send Mode to MQTT_pub
     vTaskDelay(5000 / portTICK_RATE_MS);
 }
 }
@@ -569,7 +585,7 @@ void MQTT_pub(void *pvParameter)
 	        esp_mqtt_client_publish(client, topic_regulator_mode_v, buf_mode, 0, 0, 0);   
 	    }
 
-    	vTaskDelay(5000 / portTICK_RATE_MS);
+    //	vTaskDelay(5000 / portTICK_RATE_MS);
 	}
 }
 
@@ -602,22 +618,22 @@ void app_main()
 	/*********************/
 	
 	/*** zero sensor ***/
-    io_conf.intr_type = GPIO_PIN_INTR_ANYEDGE; //interrupt ANYEDGE
-	io_conf.mode = GPIO_MODE_INPUT; //set as input mode
-    io_conf.pin_bit_mask = GPIO_INPUT_PIN_SEL; //bit mask of the pins, use GPIO34 here
-    io_conf.pull_up_en = 0; //enable pull-up mode
-    io_conf.pull_down_en = 0; //disable pull-down_cw mode - отключитли подтяжку к земле
-    gpio_config(&io_conf);
+//    io_conf.intr_type = GPIO_PIN_INTR_ANYEDGE; //interrupt ANYEDGE
+//	io_conf.mode = GPIO_MODE_INPUT; //set as input mode
+//  io_conf.pin_bit_mask = GPIO_INPUT_PIN_SEL; //bit mask of the pins, use GPIO34 here
+//    io_conf.pull_up_en = 0; //enable pull-up mode
+//    io_conf.pull_down_en = 0; //disable pull-down_cw mode - отключитли подтяжку к земле
+//    gpio_config(&io_conf);
 	/*********************/
 	
 	
 	
-    esp_err_t err;
+  //  esp_err_t err;
     //install gpio isr service
-    err = gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);//  
+ //   err = gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);//  
     //hook isr handler for specific gpio pin
-    gpio_isr_handler_add(ZERO_SENSOR, gpio_isr_handler, (void*) ZERO_SENSOR);
-    ESP_ERROR_CHECK(err);
+//    gpio_isr_handler_add(ZERO_SENSOR, gpio_isr_handler, (void*) ZERO_SENSOR);
+//    ESP_ERROR_CHECK(err);
 	
 	
     vSemaphoreCreateBinary(xBinSemaphoreZS);
@@ -634,11 +650,11 @@ void app_main()
 
 
     
-    xStatus_task_isr_handler_ZS = xTaskCreate(task_isr_handler_ZS, "task isr handler Zero Sensor", 1024 * 4,  NULL, 8, NULL); //&xZS_Handle
-    if(xStatus_task_isr_handler_ZS == pdPASS)
-	ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is created");
-    else
-	ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is not created");
+//    xStatus_task_isr_handler_ZS = xTaskCreate(task_isr_handler_ZS, "task isr handler Zero Sensor", 1024 * 4,  NULL, 8, NULL); //&xZS_Handle
+//    if(xStatus_task_isr_handler_ZS == pdPASS)
+//	ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is created");
+//    else
+//	ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is not created");
 
 	
 	 //Initialize NVS
@@ -655,7 +671,7 @@ void app_main()
     vTaskDelay(5000 / portTICK_RATE_MS);
 
 
-    xTaskCreate(&Regulator_task, "Regulator Humi", 2048, NULL, 5, NULL);
+    xTaskCreate(&Regulator_task, "Regulator Humi", 2048, NULL, 6, NULL);
 
     xTaskCreate(&MQTT_pub, "MQTT publish task", 3072, NULL, 5, NULL);
 }
@@ -663,20 +679,20 @@ void app_main()
 
 
 
-
-static void delay_timer_callback(void* arg)
-{
+//static void delay_timer_callback(void* arg)
+//{
     //int64_t time_since_boot = esp_timer_get_time();
-    esp_timer_handle_t startingTRIAC_timer_handle = (esp_timer_handle_t) arg;
-	gpio_set_level(FAN, 1); //FAN switch on 
-	//ESP_LOGI(TAG, "[task_isr_handler_ZS] Fan on half");
+//    esp_timer_handle_t startingTRIAC_timer_handle = (esp_timer_handle_t) arg;
+//	gpio_set_level(FAN, 1); //FAN switch on 
+//	//ESP_LOGI(TAG, "[task_isr_handler_ZS] Fan on half");
     /* To start the timer which is running, need to stop it first */
-    ESP_ERROR_CHECK(esp_timer_start_once(startingTRIAC_timer_handle, 50));
+//    ESP_ERROR_CHECK(esp_timer_start_once(startingTRIAC_timer_handle, 50));
     //ESP_LOGI(TAG, "[delay_timer_callback] startingTRIAC_timer start once");
-}
+//}
 
 
-static void startingTRIAC_timer_callback(void* arg)
-{
-	gpio_set_level(FAN, 0); //FAN switch off
-}
+//static void startingTRIAC_timer_callback(void* arg)
+//{
+//	gpio_set_level(FAN, 0); //FAN switch off
+//}
+
