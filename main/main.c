@@ -68,8 +68,6 @@ static EventGroupHandle_t s_wifi_event_group;
 
 
 
-static void startingTRIAC_timer_callback(void* arg);
-static void delay_timer_callback(void* arg);
 
 static int s_retry_num = 0;
 
@@ -147,20 +145,6 @@ xQueueHandle xQueueMode;
 xQueueHandle xQueueSpeed;
 xSemaphoreHandle xBinSemaphoreZS;
 
-
-// static void IRAM_ATTR gpio_isr_handler(void* arg)
-//{
-//    uint32_t gpio_num = (uint32_t) arg;
-//	static portBASE_TYPE xHigherPriorityTaskWoken;
-//	xHigherPriorityTaskWoken = pdFALSE;
-//	if(gpio_num == ZERO_SENSOR){
-//	xSemaphoreGiveFromISR(xBinSemaphoreZS, &xHigherPriorityTaskWoken);
-//		if(xHigherPriorityTaskWoken)
-//		{
-//			portYIELD_FROM_ISR();
-//		}
-//	}
-//}
 
 
 
@@ -379,60 +363,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
 
 
-/* very high priority task*/
-static void  task_isr_handler_ZS(void* arg)
-{
-	UBaseType_t uxPriority;
-	uxPriority = uxTaskPriorityGet(NULL);
-	ESP_LOGI(TAG, "[task_isr_handler_ZS] Priority get = [%d]",  (uint8_t)uxPriority);
-	
-	/* Create a one-shot timer for starting TRIAC */
-	const esp_timer_create_args_t startingTRIAC_timer_args = {
-            .callback = &startingTRIAC_timer_callback,
-            /* name is optional, but may help identify the timer when debugging */
-            .name = "starting TRIAC"
-    };
-    esp_timer_handle_t startingTRIAC_timer;
-    ESP_ERROR_CHECK(esp_timer_create(&startingTRIAC_timer_args, &startingTRIAC_timer));
-	
-	
-	/* Create a one-shot timer for delay RMS */
-	const esp_timer_create_args_t delay_timer_args = {
-            .callback = &delay_timer_callback,
-			.arg = (void*) startingTRIAC_timer,
-            .name = "delay timer"
-    };
-	esp_timer_handle_t delay_timer;
-    ESP_ERROR_CHECK(esp_timer_create(&delay_timer_args, &delay_timer));
-	
-	
-//	uint32_t io_num;
-	fan_event_t received_data;
-	uint8_t speed = 0;
-	ESP_LOGI(TAG, "[task_isr_handler_ZS]esp_timer is configured");
-	
-	for(;;){
-		xSemaphoreTake(xBinSemaphoreZS, portMAX_DELAY);
-		
-		xQueueReceive(xQueueDIM, &received_data, 0);
-		speed = received_data.speed;
-		
-		//ESP_LOGI(TAG, "[task_isr_handler_ZS] speed = %d", speed);
-		switch(speed){
-		case 0:
-			gpio_set_level(FAN, 0); //FAN switch off
-			break;
-		case 1:
-			/* Start the one-shot timer */
-			esp_timer_start_once(delay_timer, 5000);
-			break;
-		case 2:
-			gpio_set_level(FAN, 1); //FAN switch on - 100% speed
-			break;
-		}
-  //	xQueueSendToBack(xQueueSpeeddata, &speed, 0); //send Seed to MQTT_pub
-	}
-}
 
 
 
@@ -495,7 +425,6 @@ while(1){
    	else if(H < (target_humidity - delta)){
 	
                 ESP_LOGI(TAG_reg, "[Regulator_task] Avto mode - Fan OFF");
-               // xQueueSendToBack(xQueueDIM, &sp, portMAX_DELAY);
 		gpio_set_level(FAN, 0); //FAN switch off
         }
     }
@@ -585,7 +514,6 @@ void MQTT_pub(void *pvParameter)
 	        esp_mqtt_client_publish(client, topic_regulator_mode_v, buf_mode, 0, 0, 0);   
 	    }
 
-    //	vTaskDelay(5000 / portTICK_RATE_MS);
 	}
 }
 
@@ -617,23 +545,7 @@ void app_main()
     gpio_config(&io_conf); //configure GPIO with the given settings
 	/*********************/
 	
-	/*** zero sensor ***/
-//    io_conf.intr_type = GPIO_PIN_INTR_ANYEDGE; //interrupt ANYEDGE
-//	io_conf.mode = GPIO_MODE_INPUT; //set as input mode
-//  io_conf.pin_bit_mask = GPIO_INPUT_PIN_SEL; //bit mask of the pins, use GPIO34 here
-//    io_conf.pull_up_en = 0; //enable pull-up mode
-//    io_conf.pull_down_en = 0; //disable pull-down_cw mode - отключитли подтяжку к земле
-//    gpio_config(&io_conf);
-	/*********************/
 	
-	
-	
-  //  esp_err_t err;
-    //install gpio isr service
- //   err = gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);//  
-    //hook isr handler for specific gpio pin
-//    gpio_isr_handler_add(ZERO_SENSOR, gpio_isr_handler, (void*) ZERO_SENSOR);
-//    ESP_ERROR_CHECK(err);
 	
 	
     vSemaphoreCreateBinary(xBinSemaphoreZS);
@@ -650,12 +562,6 @@ void app_main()
 
 
     
-//    xStatus_task_isr_handler_ZS = xTaskCreate(task_isr_handler_ZS, "task isr handler Zero Sensor", 1024 * 4,  NULL, 8, NULL); //&xZS_Handle
-//    if(xStatus_task_isr_handler_ZS == pdPASS)
-//	ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is created");
-//    else
-//	ESP_LOGI(TAG, "[app_main] Task [task isr handler Zero Sensor] is not created");
-
 	
 	 //Initialize NVS
     esp_err_t ret = nvs_flash_init();
@@ -666,8 +572,9 @@ void app_main()
     }
     ESP_ERROR_CHECK(ret);
     ESP_ERROR_CHECK(esp_netif_init());
-    //esp_log_level_set("*", ESP_LOG_INFO);
     wifi_init_sta();
+
+
     vTaskDelay(5000 / portTICK_RATE_MS);
 
 
@@ -677,22 +584,4 @@ void app_main()
 }
 
 
-
-
-//static void delay_timer_callback(void* arg)
-//{
-    //int64_t time_since_boot = esp_timer_get_time();
-//    esp_timer_handle_t startingTRIAC_timer_handle = (esp_timer_handle_t) arg;
-//	gpio_set_level(FAN, 1); //FAN switch on 
-//	//ESP_LOGI(TAG, "[task_isr_handler_ZS] Fan on half");
-    /* To start the timer which is running, need to stop it first */
-//    ESP_ERROR_CHECK(esp_timer_start_once(startingTRIAC_timer_handle, 50));
-    //ESP_LOGI(TAG, "[delay_timer_callback] startingTRIAC_timer start once");
-//}
-
-
-//static void startingTRIAC_timer_callback(void* arg)
-//{
-//	gpio_set_level(FAN, 0); //FAN switch off
-//}
 
