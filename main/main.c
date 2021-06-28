@@ -378,7 +378,7 @@ void Regulator_task(void *pvParameter)
     vTaskDelay(5000 / portTICK_RATE_MS);
 
     portBASE_TYPE xStatus;
-    ESP_LOGI(TAG_reg, "Starting Regulator Task\n\n"); 
+//    ESP_LOGI(TAG_reg, "Starting Regulator Task\n\n"); 
     enum Mode Reg_mode;
     Reg_mode = avto;
 
@@ -395,13 +395,13 @@ void Regulator_task(void *pvParameter)
   //  uint8_t sp = 0;
 
 while(1){
-        ESP_LOGI(TAG_reg, "=== Reading DHT ===\n");
+ //       ESP_LOGI(TAG_reg, "=== Reading DHT ===\n");
 	ret = readDHT();
 	errorHandler(ret);
 	if (ret == 0){
 		H = getHumidity();
 		T = getTemperature();
-		ESP_LOGI(TAG_reg, "Hum: %.1f Tmp: %.1f", H, T);
+//		ESP_LOGI(TAG_reg, "Hum: %.1f Tmp: %.1f", H, T);
 		dht22.H = H;
 		dht22.T = T;
 	}
