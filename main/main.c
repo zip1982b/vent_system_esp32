@@ -389,7 +389,7 @@ void Regulator_task(void *pvParameter)
     int ret;
     
     
-    uint8_t target_humidity = 15;/* % */
+    uint8_t target_humidity = 55;/* % */
     uint8_t delta = 2;//default delta
     uint8_t fan_on = 0;//default speed
   //  uint8_t sp = 0;
