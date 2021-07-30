@@ -50,7 +50,6 @@ enum Mode {
 
 
 
-
 #define ESP_WIFI_SSID 		CONFIG_ESP_WIFI_SSID 
 #define ESP_WIFI_PASS 		CONFIG_ESP_WIFI_PASSWORD 
 #define ESP_MAXIMUM_RETRY 	CONFIG_ESP_MAXIMUM_RETRY
@@ -77,7 +76,6 @@ static int s_retry_num = 0;
 
 /* tags */
 static const char* TAG = "VentSys";
-static const char* TAG_reg = "Regulator";
 static const char* TAG_mqtt = "MQTT";
 static const char* TAG_wifi = "wifi station";
 
@@ -442,89 +440,14 @@ static void  task_isr_handler_ZS(void* arg)
 
 
 
-
-void Regulator_task(void *pvParameter)
-{
-    vTaskDelay(5000 / portTICK_RATE_MS);
-    ESP_LOGI(TAG_reg, "Starting Regulator Task\n\n"); 
-    enum Mode Reg_mode;
-    Reg_mode = avto;
-
-    setDHTgpio(GPIO_NUM_33);
-    float H = 0.0;
-    float T;
-    dht_data_t dht22;
-    int ret;
-    
-    
-    uint8_t target_humidity = 15;/* % */
-    uint8_t delta = 2;//default delta
-    uint8_t Speed = 2;//default speed
-    uint8_t sp = 0;
-
-while(1){
-        ESP_LOGI(TAG_reg, "=== Reading DHT ===\n");
-	ret = readDHT();
-	errorHandler(ret);
-	if (ret == 0){
-		H = getHumidity();
-		T = getTemperature();
-		ESP_LOGI(TAG_reg, "Hum: %.1f Tmp: %.1f", H, T);
-		dht22.H = H;
-		dht22.T = T;
-	}
-	xQueueReceive(xQueueSpeed, &Speed, 0);
-	xQueueReceive(xQueueTargetHumi, &target_humidity, 0);
-	xQueueReceive(xQueueMode, &Reg_mode, 0);//regulator mode (auto, hand)
-
-  	xQueueSendToBack(xQueueDHTdata, &dht22, 0); //send H and T to MQTT_pub
-
-
-    if(Reg_mode){
-	if(H > (target_humidity + delta)){
-	/* need low humidity */
-		ESP_LOGI(TAG_reg, "[Regulator_task] Fan ON, speed = %d", Speed);
-  		xQueueSendToBack(xQueueDIM, &Speed, 0);
-        }
-   	else if(H < (target_humidity - delta)){
-                ESP_LOGI(TAG_reg, "[Regulator_task] Fan OFF, speed = 0");
-                xQueueSendToBack(xQueueDIM, &sp, portMAX_DELAY);
-        }
-    }
-    else{
-	    xQueueSendToBack(xQueueDIM, &Speed, portMAX_DELAY);
-    }
-
-   // xQueueSendToBack(xQueueTargetHumidata, &target_humidity, 0); //send Terget Humi to MQTT_pub
-   // xQueueSendToBack(xQueueModedata, &Reg_mode, 0); //send Mode to MQTT_pub
-    vTaskDelay(5000 / portTICK_RATE_MS);
-}
-}
-
-
-
-
-
-
-
-
-
-
-
 void MQTT_pub(void *pvParameter)
 {
-	char buf_H[5];
-	char buf_T[5];
-	portBASE_TYPE xStatus;
 
 	portBASE_TYPE xStatus1;
 	char buf_speed[5];
 	uint8_t speed = 0;
 
 
-	portBASE_TYPE xStatus2;
-	char buf_target_h[5];
-	uint8_t target_humi = 0;
 
 
 	portBASE_TYPE xStatus3;
@@ -532,7 +455,6 @@ void MQTT_pub(void *pvParameter)
 	uint8_t mode = 0;
 
 
-        dht_data_t dht22;
 
 	esp_mqtt_client_config_t mqtt_cfg = {
 		.uri = CONFIG_BROKER_URL,
@@ -542,26 +464,12 @@ void MQTT_pub(void *pvParameter)
 	esp_mqtt_client_start(client);
 	
 	while(1){
-	    xStatus = xQueueReceive(xQueueDHTdata, &dht22, 0);
-	    if(xStatus == pdPASS){
-		sprintf(buf_H, "%1.1f", dht22.H);
-		sprintf(buf_T, "%1.1f", dht22.T);
-	        esp_mqtt_client_publish(client, topic_DHT22_dataH, buf_H, 0, 0, 0);   
-	        esp_mqtt_client_publish(client, topic_DHT22_dataT, buf_T, 0, 0, 0);    
-	    }
 
 	    xStatus1 = xQueueReceive(xQueueSpeeddata, &speed, 0);
 	    if(xStatus1 == pdPASS){
 		sprintf(buf_speed, "%d", speed);
 	        esp_mqtt_client_publish(client, topic_regulator_vent_speed_v, buf_speed, 0, 0, 0);   
 	    }
-
-	    xStatus2 = xQueueReceive(xQueueTargetHumidata, &target_humi, 0);
-	    if(xStatus2 == pdPASS){
-		sprintf(buf_target_h, "%d", target_humi);
-	        esp_mqtt_client_publish(client, topic_regulator_target_humi_v, buf_target_h, 0, 0, 0);   
-	    }
-
 
 	    xStatus3 = xQueueReceive(xQueueModedata, &mode, 0);
 	    if(xStatus3 == pdPASS){
@@ -622,14 +530,14 @@ void app_main()
 	
     vSemaphoreCreateBinary(xBinSemaphoreZS);
     xQueueDIM = xQueueCreate(5, sizeof(fan_event_t));
-    xQueueDHTdata = xQueueCreate(5, sizeof(dht_data_t));
+//    xQueueDHTdata = xQueueCreate(5, sizeof(dht_data_t));
     xQueueMode = xQueueCreate(5, sizeof(uint8_t));
     xQueueSpeed = xQueueCreate(5, sizeof(uint8_t));
-    xQueueTargetHumi = xQueueCreate(5, sizeof(float));
+//    xQueueTargetHumi = xQueueCreate(5, sizeof(float));
 	
     xQueueSpeeddata = xQueueCreate(5, sizeof(uint8_t));
     xQueueModedata = xQueueCreate(5, sizeof(uint8_t));
-    xQueueTargetHumidata = xQueueCreate(5, sizeof(uint8_t));
+//    xQueueTargetHumidata = xQueueCreate(5, sizeof(uint8_t));
 
 
 
@@ -655,7 +563,6 @@ void app_main()
     vTaskDelay(5000 / portTICK_RATE_MS);
 
 
-    xTaskCreate(&Regulator_task, "Regulator Humi", 2048, NULL, 5, NULL);
 
     xTaskCreate(&MQTT_pub, "MQTT publish task", 3072, NULL, 5, NULL);
 }
