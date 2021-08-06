@@ -43,6 +43,10 @@
 #include "DHT.h"
 
 
+#include "esp_task_wdt.h"
+
+
+
 enum Mode {
 	hand,
 	avto
@@ -79,17 +83,12 @@ static const char* TAG = "VentSys";
 static const char* TAG_mqtt = "MQTT";
 static const char* TAG_wifi = "wifi station";
 
-/* topics for mqtt */
-const char topic_DHT22_dataH[] = "/home/bathroom/humi/value";
-const char topic_DHT22_dataT[] = "/home/bathroom/temp/value";
 
-const char topic_regulator_vent_speed[] = "/home/bathroom/reg/speed/set";
-const char topic_regulator_target_humi[] = "/home/bathroom/reg/target_humi/set";
-const char topic_regulator_mode[] = "/home/bathroom/reg/mode/set";
+const char topic_fan_speed[] = "/home/wc/fan/speed/set";
+const char topic_fan_mode[] = "/home/wc/fan/mode/set";
 
-const char topic_regulator_vent_speed_v[] = "/home/bathroom/reg/speed/value";
-const char topic_regulator_target_humi_v[] = "/home/bathroom/reg/target_humi/value";
-const char topic_regulator_mode_v[] = "/home/bathroom/reg/mode/value";
+const char topic_fan_speed_v[] = "/home/wc/fan/speed/value";
+const char topic_fan_mode_v[] = "/home/wc/fan/mode/value";
 
 /* 
  *
@@ -117,10 +116,6 @@ typedef struct {
 } fan_event_t;
 
 
-typedef struct {
-	float H;
-	float T;
-} dht_data_t;
 
 
 
@@ -133,15 +128,12 @@ xTaskHandle xVenting_Handle;
 xTaskHandle xZS_Handle;
 
 xQueueHandle xQueueDIM;
-xQueueHandle xQueueDHTdata;
 
 xQueueHandle xQueueSpeeddata;
 xQueueHandle xQueueModedata;
-xQueueHandle xQueueTargetHumidata;
 
 
-xQueueHandle xQueueTargetHumi;
-xQueueHandle xQueueMode;
+//xQueueHandle xQueueMode;
 xQueueHandle xQueueSpeed;
 xSemaphoreHandle xBinSemaphoreZS;
 
@@ -159,7 +151,6 @@ xSemaphoreHandle xBinSemaphoreZS;
 		}
 	}
 }
-
 
 
 
@@ -286,15 +277,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 	vent_speed = &speed[0];
 	uint8_t set_speed;
 
-	char humi[5];
-	char *target_humi;
-	target_humi = &humi[0];
-	float target_humidity;
 
 	char mode[1];
-	char *reg_mode;
-	reg_mode = &mode[0];
-	uint8_t mode_regulator;
+	char *fan_mode;
+	fan_mode = &mode[0];
+	uint8_t mode_fan;
 
     ESP_LOGD(TAG_mqtt, "event dispatched from event loop base=%s, event_id=%d", base, event_id);
     esp_mqtt_event_handle_t event = event_data;
@@ -302,9 +289,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     switch((esp_mqtt_event_id_t)event_id){
 	    case MQTT_EVENT_CONNECTED:
 		    ESP_LOGI(TAG_mqtt, "MQTT_EVENT_CONNECTED");
-		    esp_mqtt_client_subscribe(client, topic_regulator_vent_speed, 0);
-		    esp_mqtt_client_subscribe(client, topic_regulator_target_humi, 0);
-		    esp_mqtt_client_subscribe(client, topic_regulator_mode, 0);
+		    esp_mqtt_client_subscribe(client, topic_fan_speed, 0);
+		   // esp_mqtt_client_subscribe(client, topic_fan_mode, 0);
 		    break;
 	    case MQTT_EVENT_DISCONNECTED:
 		    ESP_LOGI(TAG_mqtt, "MQTT_EVENT_DISCONNECTED");
@@ -322,24 +308,20 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 		    ESP_LOGI(TAG_mqtt, "MQTT_EVENT_DATA");
 		    printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
 		    printf("DATA=%.*s\r\n", event->data_len, event->data);
-		    if(strncmp(topic_regulator_vent_speed, event->topic, event->topic_len)==0){
+		    if(strncmp(topic_fan_speed, event->topic, event->topic_len)==0){
 			    ESP_LOGI(TAG_mqtt, "received vent speed set");
 			    strncpy(vent_speed, event->data, event->data_len);
 			    set_speed = atoi(vent_speed);
 			    xQueueSendToBack(xQueueSpeed, &set_speed, 100/portTICK_RATE_MS);
 		    }
-		    else if(strncmp(topic_regulator_target_humi, event->topic, event->topic_len)==0){
-			    ESP_LOGI(TAG_mqtt, "received target humidity");
-			    strncpy(target_humi, event->data, event->data_len);
-			    target_humidity = atoi(target_humi);
-			    xQueueSendToBack(xQueueTargetHumi, &target_humidity, 100/portTICK_RATE_MS);
-		    }
-		    else if(strncmp(topic_regulator_mode, event->topic, event->topic_len)==0){
+		    /*
+		    else if(strncmp(topic_fan_mode, event->topic, event->topic_len)==0){
 			    ESP_LOGI(TAG_mqtt, "received mode");
-			    strncpy(reg_mode, event->data, event->data_len);
-			    mode_regulator = atoi(reg_mode);
-			    xQueueSendToBack(xQueueMode, &mode_regulator, 100/portTICK_RATE_MS);
-		    }
+			    strncpy(fan_mode, event->data, event->data_len);
+			    mode_fan = atoi(fan_mode);
+			    xQueueSendToBack(xQueueMode, &mode_fan, 100/portTICK_RATE_MS);
+		    }*/
+
 		    else ESP_LOGI(TAG_mqtt, "topic strings not equal");
                     break;
 	    case MQTT_EVENT_ERROR:
@@ -407,13 +389,15 @@ static void  task_isr_handler_ZS(void* arg)
 //	uint32_t io_num;
 	fan_event_t received_data;
 	uint8_t speed = 0;
+	uint8_t data = 0;
 	ESP_LOGI(TAG, "[task_isr_handler_ZS]esp_timer is configured");
 	
 	for(;;){
 		xSemaphoreTake(xBinSemaphoreZS, portMAX_DELAY);
 		
-		xQueueReceive(xQueueDIM, &received_data, 0);
+		xQueueReceive(xQueueSpeed, &received_data, 0);
 		speed = received_data.speed;
+		
 		
 		//ESP_LOGI(TAG, "[task_isr_handler_ZS] speed = %d", speed);
 		switch(speed){
@@ -428,7 +412,10 @@ static void  task_isr_handler_ZS(void* arg)
 			gpio_set_level(FAN, 1); //FAN switch on - 100% speed
 			break;
 		}
-  //	xQueueSendToBack(xQueueSpeeddata, &speed, 0); //send Seed to MQTT_pub
+		if(speed != data){
+  			xQueueSendToBack(xQueueSpeeddata, &speed, 0); //send Seed to MQTT_pub
+			data = speed;
+		}
 	}
 }
 
@@ -449,11 +436,11 @@ void MQTT_pub(void *pvParameter)
 
 
 
-
+/*
 	portBASE_TYPE xStatus3;
 	char buf_mode[5];
 	uint8_t mode = 0;
-
+*/
 
 
 	esp_mqtt_client_config_t mqtt_cfg = {
@@ -468,16 +455,18 @@ void MQTT_pub(void *pvParameter)
 	    xStatus1 = xQueueReceive(xQueueSpeeddata, &speed, 0);
 	    if(xStatus1 == pdPASS){
 		sprintf(buf_speed, "%d", speed);
-	        esp_mqtt_client_publish(client, topic_regulator_vent_speed_v, buf_speed, 0, 0, 0);   
+	        esp_mqtt_client_publish(client, topic_fan_speed_v, buf_speed, 0, 0, 0);   
 	    }
-
+/*
 	    xStatus3 = xQueueReceive(xQueueModedata, &mode, 0);
 	    if(xStatus3 == pdPASS){
 		sprintf(buf_mode, "%d", mode);
 	        esp_mqtt_client_publish(client, topic_regulator_mode_v, buf_mode, 0, 0, 0);   
 	    }
+*/
+    	vTaskDelay(1000 / portTICK_RATE_MS);
+	esp_task_wdt_reset();
 
-    	vTaskDelay(5000 / portTICK_RATE_MS);
 	}
 }
 
@@ -531,7 +520,7 @@ void app_main()
     vSemaphoreCreateBinary(xBinSemaphoreZS);
     xQueueDIM = xQueueCreate(5, sizeof(fan_event_t));
 //    xQueueDHTdata = xQueueCreate(5, sizeof(dht_data_t));
-    xQueueMode = xQueueCreate(5, sizeof(uint8_t));
+//    xQueueMode = xQueueCreate(5, sizeof(uint8_t));
     xQueueSpeed = xQueueCreate(5, sizeof(uint8_t));
 //    xQueueTargetHumi = xQueueCreate(5, sizeof(float));
 	
